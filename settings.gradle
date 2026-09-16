@@ -1,4 +1,4 @@
-rootProject.name = 'SighsTemple'
+rootProject.name = 'GravityEngine'
 
 include 'common'
 

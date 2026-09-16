@@ -1,25 +1,32 @@
-modLoader = "javafml"
-loaderVersion = "[4,)"
-license = "${mod_license}"
+# The name of the mod loader type to load - for regular FML @Mod mods it should be javafml
+modLoader="javafml" #mandatory
 
-[[mods]]
-modId = "${mod_id}"
-version = "${mod_version}"
-displayName = "${mod_name}"
-authors = "${mod_authors}"
-description = "${mod_description}"
+# A version range to match for said mod loader - for regular FML @Mod it will be the FML version. This is currently 4.
+loaderVersion="[1,)" #mandatory
+
+# The license for you mod.
+license="${mod_license}"
+
+[[mods]] #mandatory
+modId="${mod_id}" #mandatory
+version="${mod_version}" #mandatory
+displayName="${mod_name}" #mandatory
+authors="${mod_authors}" #optional
+description='''${mod_description}'''
+
+[[mixins]]
+config="${mod_id}.mixins.json"
 
 [[dependencies.${mod_id}]]
-modId = "neoforge"
-type = "required"
-versionRange = "${neoforge_version_range}"
-ordering = "NONE"
-side = "BOTH"
+    modId="neoforge"
+    type="required"
+    versionRange="${neoforge_version_range}"
+    ordering="NONE"
+    side="BOTH"
 
 [[dependencies.${mod_id}]]
-modId = "minecraft"
-type = "required"
-versionRange = "[${minecraft_version},1.21.2)"
-ordering = "NONE"
-side = "BOTH"
-
+    modId="minecraft"
+    type="required"
+    versionRange="[${minecraft_version}]"
+    ordering="NONE"
+    side="BOTH"

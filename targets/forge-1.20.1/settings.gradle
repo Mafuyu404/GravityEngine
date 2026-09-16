@@ -6,7 +6,7 @@ pluginManagement {
     }
 }
 
-rootProject.name = 'SighsTemple-forge-1.20.1'
+rootProject.name = 'GravityEngine-forge-1.20.1'
 
 include 'common'
 project(':common').projectDir = file('../../common')

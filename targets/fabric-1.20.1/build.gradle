@@ -14,10 +14,7 @@ apply plugin: 'fabric-loom'
 apply plugin: 'java'
 apply plugin: 'me.modmuss50.mod-publish-plugin'
 
-def properties = new Properties()
-file('../../gradle.properties').withInputStream { properties.load(it) }
-file('gradle.properties').withInputStream { properties.load(it) }
-properties.each { key, value -> ext.set(key.toString(), value.toString()) }
+apply from: file('../../gradle/target-conventions/properties.gradle')
 
 group = mod_group_id
 version = mod_version
@@ -40,7 +37,7 @@ repositories {
 }
 
 dependencies {
-    minecraft "com.mojang:minecraft:${fabric_minecraft_version}"
+    minecraft "com.mojang:minecraft:${minecraft_version}"
     mappings loom.officialMojangMappings()
     modImplementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
@@ -49,7 +46,7 @@ dependencies {
 
 tasks.named('processResources', ProcessResources).configure {
     def replaceProperties = [
-            minecraft_version: fabric_minecraft_version,
+            minecraft_version: minecraft_version,
             fabric_loader_version: fabric_loader_version,
             mod_id: mod_id,
             mod_name: mod_name,

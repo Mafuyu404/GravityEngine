@@ -8,7 +8,7 @@
   "license": "${mod_license}",
   "environment": "*",
   "entrypoints": {
-    "main": ["cc.sighs.temple.TempleFabric"]
+    "main": ["cc.sighs.gravityengine.GravityEngineFabric"]
   },
   "depends": {
     "fabricloader": ">=${fabric_loader_version}",

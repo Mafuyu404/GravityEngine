@@ -28,7 +28,8 @@
 
 `common` 只能包含：
 
-- Java 8 兼容的业务逻辑、数学、状态机、队列和不可变 DTO。
+- Java 21 兼容的业务逻辑、数学、状态机、队列和不可变 DTO。
+- JOML 几何与数学类型。
 - 不引用 Minecraft 类型的扩展接口、事件语义和渲染计划。
 - 无加载器依赖的单元测试。
 
@@ -219,10 +220,10 @@ target-only 的快速验证工作流可以后续按同一模式增加，但不�
 一个发布物只能对应一个 loader 与一个 Minecraft 版本：
 
 ```text
-SighsTemple-forge-1.20.1-<version>.jar
-SighsTemple-fabric-1.20.1-<version>.jar
-SighsTemple-neoforge-1.21.1-<version>.jar
-SighsTemple-neoforge-26.1-<version>.jar
+GravityEngine-forge-1.20.1-<version>.jar
+GravityEngine-fabric-1.20.1-<version>.jar
+GravityEngine-neoforge-1.21.1-<version>.jar
+GravityEngine-neoforge-26.1-<version>.jar
 ```
 
 不要发布混合 loader 的 universal jar。

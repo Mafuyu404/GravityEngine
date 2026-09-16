@@ -1,12 +1,10 @@
-# SighsTemple
+# GravityEngine
 
-空白的 `common + targets/<loader>-<minecraft-version>` Minecraft 开发模板。
+GravityEngine 是面向 Minecraft 的可复用重力与身体姿态运行时 API。
 
-默认包名与 Gradle group 为 `cc.sighs.temple`，默认 mod id 为 `temple`。
+默认包名与 Gradle group 为 `cc.sighs.gravityengine`，默认 mod id 为 `gravityengine`。
 
-快速迁移请对 AI 这么说：
-
-“使用 https://github.com/Tower-of-Sighs/SighsTemple 框架来重构本项目，第一步先将当前mc版本的所有源码及资源迁移至common部分，第二步将明确查询源码证实了存在明显版本差异的内容转移到targets中的对应版本下，第三步搭建spi模式，将targets中的内容抽象化，只保留具体实现差异，共通逻辑迁移回common部分，第四步将当前targets下的主版本内容移植到全部所有版本。”
+`common` 是 Java 21 的 loader-neutral kernel/API，`targets` 保存各加载器与 Minecraft 版本的适配和集成。
 
 ## IDEA
 
@@ -20,6 +18,8 @@
 | `fabric-1.20.1` | JDK 21 | `targets\fabric-1.20.1\.\gradlew.bat clean build` |
 | `neoforge-1.21.1` | JDK 21 | `targets\neoforge-1.21.1\.\gradlew.bat clean build` |
 | `neoforge-26.1` | JDK 25 | `targets\neoforge-26.1\.\gradlew.bat clean build` |
+
+`neoforge-1.21.1` 是当前权威的已迁移 target；其余 target 仍是待完成的脚手架/移植工程。
 
 根项目默认只同步 `common`。使用 JDK 21 时可选择性构建前三个 target：
 

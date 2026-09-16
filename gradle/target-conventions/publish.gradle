@@ -14,12 +14,9 @@ dependencies {
 sourceSets.main.resources.srcDir project(':common').file('src/main/resources')
 
 def publishLoader = project.projectDir.name.tokenize('-').first()
-def publishMinecraftVersion = [
-        forge    : providers.gradleProperty('forge_minecraft_version'),
-        fabric   : providers.gradleProperty('fabric_minecraft_version'),
-        neoforge : providers.gradleProperty('neoforge_121_minecraft_version')
-                .orElse(providers.gradleProperty('neoforge_261_minecraft_version'))
-][publishLoader]
+// Target identity comes from the directory name, the Minecraft version comes from
+// the target-local gradle.properties loaded by target-conventions/properties.gradle.
+def publishMinecraftVersion = providers.provider { findProperty('minecraft_version')?.toString() }
 
 def publishFile = tasks.findByName('remapJar') != null ?
         tasks.named('remapJar').flatMap { it.archiveFile } :
@@ -53,6 +50,7 @@ publishMods {
 tasks.named('publishMods').configure {
     doFirst {
         def missing = [
+                'minecraft_version (target gradle.properties)'            : publishMinecraftVersion,
                 'publish_curseforge_project_id (or CURSEFORGE_PROJECT_ID)': curseforgeProjectId,
                 'publish_modrinth_project_id (or MODRINTH_PROJECT_ID)'    : modrinthProjectId,
                 'CURSEFORGE_TOKEN'                                        : providers.environmentVariable('CURSEFORGE_TOKEN'),
