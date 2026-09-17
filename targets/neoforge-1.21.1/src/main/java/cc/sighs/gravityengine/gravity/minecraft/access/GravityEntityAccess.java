@@ -18,6 +18,19 @@ public interface GravityEntityAccess {
     /** Actual dimensions installed by Vanilla/NeoForge Size, not a pose request. */
     net.minecraft.world.entity.EntityDimensions gravityengine$installedDimensions();
 
+    /** Pose associated with installed dimensions, separately from native pose proposals. */
+    net.minecraft.world.entity.Pose gravityengine$installedPose();
+
+    /** Restore server-published dimensions inside an explicit body transaction, without Size callbacks. */
+    void gravityengine$installMovementDimensions(net.minecraft.world.entity.EntityDimensions dimensions,
+            net.minecraft.world.entity.Pose pose, float eyeHeight);
+
+    /** Consume a deferred native size notification at the server body boundary. */
+    void gravityengine$flushPlayerDimensions();
+
+    /** Replica confirms the existing body; discard a native pose proposal without resizing. */
+    void gravityengine$discardDimensionProposal();
+
     /**
      * Thin read-only view of the entity's own persisted vanilla supporting
      * block. It exposes an existing {@code Entity} field only; it never stores

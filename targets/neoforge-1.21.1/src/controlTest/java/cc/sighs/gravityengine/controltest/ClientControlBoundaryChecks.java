@@ -1,10 +1,15 @@
 package cc.sighs.gravityengine.controltest;
 
-import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeService;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.Difficulty;
-import net.minecraft.world.level.*;
+import net.minecraft.world.level.GameRules;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.LevelSettings;
+import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.levelgen.WorldOptions;
 import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.neoforged.api.distmarker.Dist;
@@ -15,11 +20,18 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 /** Actual client send boundary in an isolated integrated world, never loaded on the server. */
 @EventBusSubscriber(modid = "gravityengine_control_tests", value = Dist.CLIENT)
 public final class ClientControlBoundaryChecks {
-    private static boolean opening, completed, stationaryCompleted;
+    private static boolean opening, completed, stationaryCompleted,
+            movementOwnershipCompleted;
     private static int ticks;
+    private static boolean fieldCoverageChecked;
     private static double largestTilt;
     private static volatile String serverSneakFailure;
     private static volatile int serverSneakChecks;
+
+    /** True for the single local player of this isolated client fixture. */
+    static boolean isLocalPlayer(net.minecraft.world.entity.Entity entity) {
+        return entity != null && entity == Minecraft.getInstance().player;
+    }
 
     @SubscribeEvent
     public static void loaded(ClientTickEvent.Post event) {
@@ -43,6 +55,13 @@ public final class ClientControlBoundaryChecks {
             // This isolated fixture supplies synthetic keys. Host desktop focus changes must
             // not randomly drop its sprint edges/held roll; production focus gating is unchanged.
             minecraft.setWindowActive(true);
+            if (!fieldCoverageChecked) {
+                ClientFieldCoverageChecks.run(minecraft);
+                ClientCorrectionAuthorityChecks.run(minecraft);
+                fieldCoverageChecked = true;
+            }
+            if (!ClientFallingBallisticChecks.tick(minecraft)) return;
+            if (!ClientFallingLandingChecks.tick(minecraft)) return;
             ++ticks;
             if (Boolean.getBoolean("gravityengine.movementSupportChecks")) {
                 minecraft.options.pauseOnLostFocus = false;
@@ -71,15 +90,29 @@ public final class ClientControlBoundaryChecks {
                                 net.minecraft.world.level.block.Blocks.STONE.defaultBlockState(), 3);
                     actor.connection.teleport(base.getX()+.5, floorY+50, base.getZ()+.5, 0, 0);
                     cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator.applyDirectAssignment(actor,
-                            new cc.sighs.gravityengine.gravity.GravityState(new net.minecraft.world.phys.Vec3(0,-1,0), .001));
+                            new cc.sighs.gravityengine.gravity.GravityState(
+                                    new cc.sighs.gravityengine.api.math.Vec3d(
+                                            0,
+                                            -1,
+                                            0
+                                    ),
+                                    .001
+                            ));
                     cc.sighs.gravityengine.network.GravitySyncService.syncPlayer(actor);
                     actor.connection.resumeFlushing();
                     System.out.println("CLIENT_FIXTURE_SERVER position=" + actor.position() + " assignment="
-                            + ((cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess) actor).gravityengine$gravityComponent().assignedState());
+                            + ((cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess) actor).gravityengine$gravityComponent().state().assignedState());
                 });
             }
-            if (ticks == 10) ClientBodyStateSendChecks.run(minecraft);
+            if (ticks == 10) {
+                ClientPassiveCompatibilityChecks.start(minecraft);
+                ClientBodyStateSendChecks.run(minecraft);
+            }
             minecraft.options.keyUp.setDown(false); // Dedicated sprint intent works without forward movement.
+            if (ticks == 30) {
+                ClientPassiveCompatibilityChecks.verify(minecraft);
+                if (!ClientPassiveCompatibilityChecks.convergence(minecraft)) { --ticks; return; }
+            }
             if (ticks == 30) minecraft.options.toggleSprint().set(true);
             minecraft.options.keyLeft.setDown(ticks >= 33 && ticks < 90);
             if (ticks == 33) {
@@ -122,31 +155,32 @@ public final class ClientControlBoundaryChecks {
                     cc.sighs.gravityengine.network.GravitySyncService.syncPlayer(actor);
                     actor.connection.resumeFlushing();
                     System.out.println("CLIENT_FIXTURE_SERVER position=" + actor.position() + " assignment="
-                            + ((cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess) actor).gravityengine$gravityComponent().assignedState());
+                            + ((cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess) actor).gravityengine$gravityComponent().state().assignedState());
                 });
             }
             cc.sighs.gravityengine.client.ClientBodyAttitudeKeys.ROLL_CLOCKWISE.setDown(ticks >= 20 && ticks < 125);
             if (ticks == 60) verifyRollInterpolation(minecraft);
             if (ticks == 5 || ticks == 35) System.out.println("CLIENT_FREE_CONTRACT sprint=" + minecraft.player.isSprinting()
                     + " position=" + minecraft.player.position() + " playerTick=" + minecraft.player.tickCount
-                    + " assignedStrength=" + ((cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess) minecraft.player).gravityengine$gravityComponent().assignedState().strength()
+                    + " assignedStrength=" + ((cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess) minecraft.player).gravityengine$gravityComponent().state().assignedState().strength()
                     + " ground=" + minecraft.player.onGround() + " paused=" + minecraft.isPaused()
                     + " serverPaused=" + minecraft.getSingleplayerServer().isPaused() + " focus=" + minecraft.isWindowActive() + " frame="
                     + cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess.authoritativeFrame(minecraft.player)
                     + " actor=" + BodyAttitudeRuntime.Access.component(minecraft.player).ownership());
             var q = BodyAttitudeRuntime.Access.component(minecraft.player).state().currentWorldFromBody();
             largestTilt = Math.max(largestTilt, cc.sighs.gravityengine.math.geometry.BodyOrientation3d.angularDistance(
-                    new org.joml.Quaterniond(), q));
+                    cc.sighs.gravityengine.math.Quatd.IDENTITY, q));
             if (ticks < 150) return;
             if (largestTilt < .001) throw new AssertionError("integrated roll input did not rotate the body");
             if (ticks == 150 && BodyAttitudeRuntime.Access.component(minecraft.player).ownership() != BodyAttitudeOwnership.INACTIVE)
                 throw new AssertionError("default reference must release actor root immediately");
+            if (!movementOwnershipCompleted) {
+                clearLocomotionInput(minecraft);
+                if (!ClientMovementOwnershipChecks.tick(minecraft)) return;
+                movementOwnershipCompleted = true;
+            }
             if (!stationaryCompleted) {
-                minecraft.options.keyLeft.setDown(false);
-                minecraft.options.keyRight.setDown(false);
-                minecraft.options.keyDown.setDown(false);
-                minecraft.options.keyJump.setDown(false);
-                minecraft.options.keyShift.setDown(false);
+                clearLocomotionInput(minecraft);
                 minecraft.player.setYRot(0);
                 minecraft.player.setXRot(0);
                 if (!ClientStationaryChecks.tick(minecraft)) return;
@@ -157,7 +191,7 @@ public final class ClientControlBoundaryChecks {
             System.out.println("INTEGRATED_KINEMATIC_ATTITUDE_COMPLETED ticks=" + ticks + " maxTiltRadians=" + largestTilt);
             System.out.println("CONTROL_BOUNDARY_CLIENT_MIXINS_PASSED");
             java.nio.file.Files.writeString(java.nio.file.Path.of("control-boundary-result.txt"),
-                    "PASS client same-step Shift descend/sneak transitions and server state / independent controller/body / Vanilla Toggle Sprint enabled / dedicated sprint toggle without forward / held and released sprint / full pitch loops / multi-turn roll with partialTick interpolation / reference release / stationary default-cardinal-oblique packet loop / released input / oblique edges / steep slide");
+                    "PASS client same-step Shift descend/sneak transitions and server state / independent controller/body / Vanilla Toggle Sprint enabled / dedicated sprint toggle without forward / held and released sprint / full pitch loops / multi-turn roll with partialTick interpolation / reference release / NATIVE_FALLBACK exact-body ownership regression / stationary default-cardinal-oblique packet loop / released input / oblique edges / steep slide");
         } catch (Throwable failure) {
             completed = true;
             failure.printStackTrace();
@@ -172,6 +206,16 @@ public final class ClientControlBoundaryChecks {
                 minecraft.stop();
             }
         }
+    }
+
+    /** All locomotion bindings released for the isolated movement fixtures. */
+    private static void clearLocomotionInput(Minecraft minecraft) {
+        minecraft.options.keyUp.setDown(false);
+        minecraft.options.keyDown.setDown(false);
+        minecraft.options.keyLeft.setDown(false);
+        minecraft.options.keyRight.setDown(false);
+        minecraft.options.keyJump.setDown(false);
+        minecraft.options.keyShift.setDown(false);
     }
 
     private static void verifySneakOwnership(Minecraft minecraft, boolean swim) {
@@ -202,10 +246,10 @@ public final class ClientControlBoundaryChecks {
         var c = cc.sighs.gravityengine.client.BodyRenderPoseResolver.snapshot(player, 1);
         if (a == null || b == null || c == null) throw new AssertionError("missing swim roll presentation");
         double step = BodyAttitudeRuntime.Config.forPlayer(player).orElseThrow().controllerRollRateRadiansPerSecond()
-                * BodyAttitudeRuntime.Service.GAME_TICK_SECONDS;
-        double first = cc.sighs.gravityengine.client.BodyAttitudeInterpolation.angularDistance(
+                * BodyAttitudeService.GAME_TICK_SECONDS;
+        double first = cc.sighs.gravityengine.attitude.presentation.BodyAttitudeInterpolation.angularDistance(
                 a.cameraView().worldFromController(), b.cameraView().worldFromController());
-        double second = cc.sighs.gravityengine.client.BodyAttitudeInterpolation.angularDistance(
+        double second = cc.sighs.gravityengine.attitude.presentation.BodyAttitudeInterpolation.angularDistance(
                 b.cameraView().worldFromController(), c.cameraView().worldFromController());
         if (Math.abs(first - step / 2) > 1e-6 || Math.abs(second - step / 2) > 1e-6)
             throw new AssertionError("held roll must interpolate within the real LocalPlayer tick: " + first + ", " + second);

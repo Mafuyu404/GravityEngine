@@ -1,14 +1,20 @@
 package cc.sighs.gravityengine.controltest;
 
-import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.api.math.Vec3d;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeStreamEpochService;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.GravityState;
+import cc.sighs.gravityengine.gravity.geometry.GravityGeometryTransitionPlanner;
 import cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator;
-import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
-
 import cc.sighs.gravityengine.gravity.integration.vanilla.VanillaBodyOccupancy;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
-import cc.sighs.gravityengine.gravity.integration.geometry.GravityGeometryTransitionService;
+import cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter;
+import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.math.Quatd;
 import cc.sighs.gravityengine.network.BodyAttitudeStateReceiver;
 import cc.sighs.gravityengine.network.ServerboundBodyAttitudeStatePayload;
 import com.mojang.authlib.GameProfile;
@@ -25,7 +31,7 @@ import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.Shapes;
-import org.joml.Quaterniond;
+
 import java.util.UUID;
 
 /** Actual transformed Vanilla packet/travel invocations in the isolated smoke world. */
@@ -33,6 +39,7 @@ final class GeometryAuthorityChecks {
     private GeometryAuthorityChecks() {}
 
     static void run(ServerLevel level) {
+        runJvm();
         phantomEdge(level);
         oldPhantomMovedWrongly(level);
         realAndExistingCollision(level);
@@ -44,24 +51,43 @@ final class GeometryAuthorityChecks {
         aiStepNormalVelocity(level);
         supportedFramePacketParity(level);
         stationaryAiStepPackets(level);
+        softPacketEndpointSupportInvalidation(level);
         independentAttitudeAndMovement(level, false);
         independentAttitudeAndMovement(level, true);
+        dynamicAttitudePacketAuthority(level);
         centerFixedBody(level);
         System.out.println("GEOMETRY_AUTHORITY_CHECKS_PASSED");
+    }
+
+    /** Packet geometry operands; the transformed packet policy runs only in the server suite. */
+    static void runJvm() {
+        var oldBody = VanillaBodyOccupancy.fromVanillaBounds(
+                new net.minecraft.world.phys.AABB(0, 0, 0, 1, 1, 1));
+        var requested = oldBody.move(new Vec3d(2, 0, 0));
+        var oldPiece = Shapes.create(new net.minecraft.world.phys.AABB(.25, .25, .25, .75, .75, .75));
+        var newPiece = Shapes.create(new net.minecraft.world.phys.AABB(2.25, .25, .25, 2.75, .75, .75));
+        check(VanillaBodyOccupancy.introducesCollision(oldBody, requested, java.util.List.of(newPiece)),
+                "new shape occupancy must be detected");
+        check(!VanillaBodyOccupancy.introducesCollision(oldBody, requested,
+                        java.util.List.of(Shapes.or(oldPiece, newPiece))),
+                "old occupancy exempts the whole Vanilla shape, including disconnected pieces");
+        check(!VanillaBodyOccupancy.introducesCollision(oldBody, oldBody, java.util.List.of(oldPiece)),
+                "stationary occupancy is not a new collision");
+        System.out.println("GEOMETRY_OPERAND_CONTROL_CHECKS_PASSED");
     }
 
     private static void phantomEdge(ServerLevel level) {
         BlockPos block = new BlockPos(7, 299, 8);
         var saved = level.getBlockState(block);
         var player = player(level, "ExactPacket", new Vec3(8.2, 300.0005 + (.3 + .6 / Math.sqrt(2)) - .9, 8.5),
-                new Quaterniond().rotationZ(Math.PI / 4));
+                Quatd.rotationZ(Math.PI / 4));
         try {
             level.setBlock(block, Blocks.STONE.defaultBlockState(), 18);
             var requested = player.position().add(0, -.001, .1);
             var old = VanillaBodyOccupancy.capture(player);
             var target = VanillaBodyOccupancy.atRequestedPosition(old, player.position(), requested);
             var shape = Shapes.create(new net.minecraft.world.phys.AABB(block));
-            check(cc.sighs.gravityengine.gravity.collision.MinecraftGeometryAdapter.toMinecraft(target.enclosingAabb())
+            check(MinecraftCollisionGeometryAdapter.toMinecraft(target.enclosingAabb())
                     .intersects(new net.minecraft.world.phys.AABB(block)), "requested proxy enters block-top layer");
             check(!VanillaBodyOccupancy.occupies(target, shape), "requested exact body clears the edge");
             send(player, requested);
@@ -76,7 +102,7 @@ final class GeometryAuthorityChecks {
     private static void finiteTopEdge(ServerLevel level) {
         var block = new BlockPos(8,299,8);
         var saved = level.getBlockState(block);
-        var actor = player(level,"FiniteEdge",new Vec3(7.5,300,8.5),new Quaterniond());
+        var actor = player(level,"FiniteEdge",new Vec3(7.5,300,8.5),Quatd.IDENTITY);
         try {
             level.setBlock(block,Blocks.STONE.defaultBlockState(),18);
             double halfWidth = actor.getBbWidth()/2.0;
@@ -103,7 +129,7 @@ final class GeometryAuthorityChecks {
         // Old proxy overlaps a block-top layer. Crossing it is physically
         // clipped, while the requested endpoint beyond the block is clear.
         var player = player(level, "OldOccupancy", new Vec3(8.2, 299.99 + (.3 + .6 / Math.sqrt(2)) - .9, 8.5),
-                new Quaterniond().rotationZ(Math.PI / 4));
+                Quatd.rotationZ(Math.PI / 4));
         try {
             level.setBlock(block, Blocks.STONE.defaultBlockState(), 18);
             Vec3 start = player.position(), requested = start.add(-3, 0, 0);
@@ -127,7 +153,7 @@ final class GeometryAuthorityChecks {
     private static void realAndExistingCollision(ServerLevel level) {
         BlockPos block = new BlockPos(9, 300, 8);
         var saved = level.getBlockState(block);
-        var player = player(level, "NewOccupancy", new Vec3(8.5, 300, 8.5), new Quaterniond());
+        var player = player(level, "NewOccupancy", new Vec3(8.5, 300, 8.5), Quatd.IDENTITY);
         try {
             level.setBlock(block, Blocks.STONE.defaultBlockState(), 18);
             Vec3 start = player.position();
@@ -142,7 +168,7 @@ final class GeometryAuthorityChecks {
         }
         BlockPos occupied = new BlockPos(8, 300, 8);
         saved = level.getBlockState(occupied);
-        player = player(level, "ExistingOccupancy", new Vec3(8.1, 300, 8.5), new Quaterniond());
+        player = player(level, "ExistingOccupancy", new Vec3(8.1, 300, 8.5), Quatd.IDENTITY);
         try {
             level.setBlock(occupied, Blocks.STONE.defaultBlockState(), 18);
             Vec3 requested = player.position().add(.4, 0, 0);
@@ -167,9 +193,9 @@ final class GeometryAuthorityChecks {
     }
 
     private static void nativeTravelAfterTeleport(ServerLevel level) {
-        var actor = player(level, "NativeTeleport", new Vec3(8.5, 350, 8.5), new Quaterniond());
+        var actor = player(level, "NativeTeleport", new Vec3(8.5, 350, 8.5), Quatd.IDENTITY);
         try {
-            GravityApplicationCoordinator.applyDirectAssignment(actor,
+            assignFixture(actor,
                     new GravityState(GravityState.DEFAULT_DOWN, .001));
             actor.setOnGround(true);
             GravityEntityAccess.cast(actor).gravityengine$setVanillaSupportingBlock(new BlockPos(8, 299, 8));
@@ -178,7 +204,7 @@ final class GeometryAuthorityChecks {
             actor.travel(Vec3.ZERO);
             near(before.add(0, -.05, 0), actor.position(), "native travel survives distant pre-teleport support");
             check(!actor.onGround(), "native move clears old ground at the airborne destination");
-            check(GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime().geometryReferenceFrame().strength() == .001,
+            check(GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState().geometryReferenceFrame().strength() == .001,
                     "native reference publishes fresh environmental strength");
         } finally { actor.discard(); }
     }
@@ -188,10 +214,10 @@ final class GeometryAuthorityChecks {
         var saved = level.getBlockState(block);
         // Default-direction fields retain the native stationary character fixed point.
         var player = player(level, "SupportedRest", new Vec3(8.5, 300, 8.5),
-                new Quaterniond());
+                Quatd.IDENTITY);
         try {
             level.setBlock(block, Blocks.STONE.defaultBlockState(), 18);
-            var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime();
+            var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState();
             Vec3 start = player.position();
             for (int tick = 0; tick < 200; tick++) {
                 player.tickCount++;
@@ -215,18 +241,34 @@ final class GeometryAuthorityChecks {
 
     private static void steepSupportedRest(ServerLevel level) {
         var block=new BlockPos(8,299,8); var saved=level.getBlockState(block);
-        var actor=player(level,"SteepRest",new Vec3(8.5,300,8.5),new Quaterniond());
+        var actor=player(level,"SteepRest",new Vec3(8.5,300,8.5),Quatd.IDENTITY);
         try {
             level.setBlock(block,Blocks.STONE.defaultBlockState(),18);
-            GravityApplicationCoordinator.applyDirectAssignment(actor,
-                    new GravityState(new Vec3(-.2,-Math.sqrt(.96),0),.08));
-            var runtime=GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime();
-            var fixtureFrame=GravityFrame.fromDown(new Vec3(-.2,-Math.sqrt(.96),0),.08);
-            var body=cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.exactBody(actor,fixtureFrame);
+        assignFixture(actor,
+                new GravityState(new Vec3d(-.2,-Math.sqrt(.96),0),.08));
+            var runtime=GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState();
+            var fixtureFrame=GravityFrame.fromDown(
+                    new Vec3d(-.2,-Math.sqrt(.96),0),
+                    .08
+            );
+            var body=cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.candidateBody(GravityEntityGeometry.dimensions(actor), actor.position(), fixtureFrame.up());
             actor.setPos(actor.position().add(0,300-body.enclosingAabb().minY(),0));
-            cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.installFromPositionAnchor(actor,fixtureFrame,actor.position());
-            actor.setDeltaMovement(runtime.geometryReferenceFrame().down().scale(.1));
+            cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.installFromPositionAnchor(actor, fixtureFrame.up(), actor.position());
+            actor.setDeltaMovement(
+                    MinecraftMathAdapter.toMinecraft(
+                            runtime.geometryReferenceFrame()
+                                    .down()
+                                    .multiply(.1)
+                    )
+            );
             actor.travel(Vec3.ZERO);
+            /*
+             * The first travel acquires the exact oblique contact and may
+             * leave the fixture's pre-contact impulse in actor velocity. The
+             * invariant under test is static support against newly generated
+             * gravity, so clear that unrelated initial impulse explicitly.
+             */
+            actor.setDeltaMovement(Vec3.ZERO);
             Vec3 start=actor.position();
             for (int tick=0;tick<300;tick++) {
                 actor.tickCount++;
@@ -243,14 +285,28 @@ final class GeometryAuthorityChecks {
         var actor = player(level, "AiNormal", new Vec3(8.5, 310, 8.5), null);
         try {
             Vec3 down = new Vec3(-.0226, -.98, -.2).normalize();
-            GravityApplicationCoordinator.applyDirectAssignment(actor, new GravityState(down, .08));
-            var frame = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime().geometryReferenceFrame();
-            actor.setDeltaMovement(frame.down().scale(.09856));
+            assignFixture(
+                    actor,
+                    new GravityState(
+                            MinecraftMathAdapter.toVec3d(down),
+                            .08
+                    )
+            );
+            var frame = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState().geometryReferenceFrame();
+            actor.setDeltaMovement(
+                    MinecraftMathAdapter.toMinecraft(
+                            frame.down().multiply(.09856)
+                    )
+            );
             actor.aiStep();
-            Vec3 local = frame.worldToLocal(actor.velocityAtTravel);
-            check(Math.abs(local.x) < 1e-12 && Math.abs(local.z) < 1e-12,
+            Vec3d local = frame.worldToLocal(
+                    MinecraftMathAdapter.toVec3d(
+                            actor.velocityAtTravel
+                    )
+            );
+            check(Math.abs(local.x()) < 1e-12 && Math.abs(local.z()) < 1e-12,
                     "aiStep must not manufacture tangent velocity: " + local);
-            check(Math.abs(local.y + .09856) < 1e-12, "aiStep preserves normal above threshold");
+            check(Math.abs(local.y() + .09856) < 1e-12, "aiStep preserves normal above threshold");
         } finally { actor.discard(); }
     }
 
@@ -261,7 +317,7 @@ final class GeometryAuthorityChecks {
         var adjacent = block.east();
         var saved = level.getBlockState(block); var savedAdjacent = level.getBlockState(adjacent);
         try {
-            double band = GravityGeometryTransitionService.COLLISION_AXIS_ANGULAR_EPSILON_RADIANS;
+            double band = GravityGeometryTransitionPlanner.COLLISION_AXIS_ANGULAR_EPSILON_RADIANS;
             for (int surface = 0; surface < 3; surface++) {
                 level.setBlock(block, surface == 2 ? Blocks.STONE_BRICK_STAIRS.defaultBlockState()
                         .setValue(net.minecraft.world.level.block.StairBlock.FACING, net.minecraft.core.Direction.WEST)
@@ -269,21 +325,35 @@ final class GeometryAuthorityChecks {
                 level.setBlock(adjacent, surface == 1 ? Blocks.STONE.defaultBlockState() : Blocks.AIR.defaultBlockState(), 18);
                 double x = surface == 1 ? 9 : 8.5;
                 for (double angle : new double[]{band * .999, band * 1.001, -band * .999, -band * 1.001, .01, -.01}) {
-                    var installed = GravityFrame.fromDown(new Vec3(-.7, -.714, -.02).normalize(), .08);
-                    var down = new Quaterniond().rotationZ(angle).transform(new org.joml.Vector3d(
-                            installed.down().x, installed.down().y, installed.down().z));
-                    var proposed = new GravityState(new Vec3(down.x, down.y, down.z), .08);
+                    var installed = GravityFrame.fromDown(
+                            new Vec3d(-.7, -.714, -.02).normalized(),
+                            .08
+                    );
+                    var down = Quatd.rotationZ(angle).transform(
+                            installed.down()
+                    );
+                    var proposed = new GravityState(down, .08);
                     var self = supportedActor(level, "FrameSelf", installed, x);
                     Vec3 start = self.position();
                     GravityFrame selected;
                     Vec3 target;
                     try {
                         evolveEnvironment(self, proposed);
-                        self.move(MoverType.SELF, installed.down().scale(.01));
+                        self.move(
+                                MoverType.SELF,
+                                MinecraftMathAdapter.toMinecraft(
+                                        installed.down().multiply(.01)
+                                )
+                        );
                         target = self.position(); selected = runtime(self).geometryReferenceFrame();
-                        check(self.recovery.lengthSqr() == 0, "SELF frame evolution requires no recovery");
+                        check(sameCollisionAxis(installed, selected), "SELF consumes the server-installed player axis");
+                        check(self.recovery.length() == 0, "a pending frame cannot generate SELF geometry recovery");
+                        var requestedBody = VanillaBodyOccupancy.atRequestedPosition(
+                                VanillaBodyOccupancy.capturePhysicalBody(self), self.position(), target);
+                        var occupancy = cc.sighs.gravityengine.gravity.integration.vanilla.RigidOccupancySnapshot
+                                .capture(self, self.oldMoveBody, requestedBody);
                         check(!VanillaBodyOccupancy.hasNewCollision(level, self, self.oldMoveBody,
-                                target.x, target.y, target.z), "SELF endpoint is exact-body legal");
+                                requestedBody, occupancy), "SELF endpoint is exact-body legal");
                     } finally { self.discard(); }
                     var server = supportedActor(level, "FramePacket", installed, x);
                     try {
@@ -291,9 +361,10 @@ final class GeometryAuthorityChecks {
                         evolveEnvironment(server, proposed);
                         send(server, target);
                         String context = " surface=" + surface + " angle=" + angle;
-                        check(selected.down().distanceTo(runtime(server).geometryReferenceFrame().down()) < 1e-12
-                                && selected.left().distanceTo(runtime(server).geometryReferenceFrame().left()) < 1e-12,
-                                "selected exact frame parity" + context);
+                        GravityFrame serverFrame =
+                                runtime(server).geometryReferenceFrame();
+                        check(sameCollisionAxis(installed, serverFrame),
+                                "packet consumes the same server-installed player axis" + context);
                         near(target, server.position(), "Vanilla accepts SELF endpoint" + context);
                         // The capsule CCD stops at its existing contact skin; Vanilla
                         // independently accepts and installs the exact packet endpoint.
@@ -308,20 +379,28 @@ final class GeometryAuthorityChecks {
         } finally { level.setBlock(block, saved, 18); level.setBlock(adjacent, savedAdjacent, 18); }
     }
 
-    private static cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState runtime(Actor actor) {
-        return GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime();
+    private static cc.sighs.gravityengine.gravity.runtime.GravityOperationState runtime(Actor actor) {
+        return GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState();
     }
 
     private static Actor supportedActor(ServerLevel level, String name, GravityFrame frame, double x) {
         var actor = player(level, name, new Vec3(x, 302, 8.5), null);
-        GravityApplicationCoordinator.applyDirectAssignment(actor, new GravityState(frame.down(), .08));
-        var body = GravityEntityGeometry.exactBody(actor, frame);
+        assignFixture(actor, new GravityState(frame.down(), .08));
+        var body = GravityEntityGeometry.candidateBody(GravityEntityGeometry.dimensions(actor), actor.position(), frame.up());
         actor.setPos(actor.position().add(0, 300 - body.enclosingAabb().minY(), 0));
-        GravityEntityGeometry.installFromPositionAnchor(actor, frame, actor.position());
-        actor.setDeltaMovement(frame.down().scale(.1));
+        GravityEntityGeometry.installFromPositionAnchor(actor, frame.up(), actor.position());
+        actor.setDeltaMovement(
+                MinecraftMathAdapter.toMinecraft(
+                        frame.down().multiply(.1)
+                )
+        );
         actor.travel(Vec3.ZERO);
         for (int settle = 0; settle < 30 && !actor.onGround(); settle++) {
-            actor.setDeltaMovement(frame.down().scale(.05));
+            actor.setDeltaMovement(
+                    MinecraftMathAdapter.toMinecraft(
+                            frame.down().multiply(.05)
+                    )
+            );
             actor.travel(Vec3.ZERO);
         }
         check(actor.onGround(), "supported fixture grounded name=" + name + " P=" + actor.position());
@@ -332,15 +411,19 @@ final class GeometryAuthorityChecks {
         // Fixture replaces environmental evidence while preserving the identical
         // installed body and continuity seen at outer operation entry on each side.
         var component = GravityEntityAccess.cast(actor).gravityengine$gravityComponent();
-        var old = component.committedApplication();
-        component.commitApplication(new cc.sighs.gravityengine.gravity.model.CommittedGravityApplication(
-                proposed, old.effectiveSuppression(), old.plan()));
+        var old = component.state().committedApplication();
+        component.state().commitAuthoritativeApplication(
+                new cc.sighs.gravityengine.gravity.model.CommittedGravityApplication(
+                        proposed, old.authoritativeSuppression(), old.plan()));
     }
 
     private static void stationaryAiStepPackets(ServerLevel level) {
         var block = new BlockPos(8, 299, 8); var saved = level.getBlockState(block);
         level.setBlock(block, Blocks.STONE.defaultBlockState(), 18);
-        var frame = GravityFrame.fromDown(new Vec3(-.0226, -.98, -.2).normalize(), .08);
+        var frame = GravityFrame.fromDown(
+                new Vec3d(-.0226, -.98, -.2).normalized(),
+                .08
+        );
         var actor = supportedActor(level, "TickRest", frame, 8.5);
         Vec3[] requests = new Vec3[100];
         try {
@@ -348,10 +431,18 @@ final class GeometryAuthorityChecks {
             for (int tick = 0; tick < requests.length; tick++) {
                 actor.tickCount++;
                 // Reproduce the traced pre-aiStep normal velocity every tick.
-                actor.setDeltaMovement(frame.down().scale(.09856));
+                actor.setDeltaMovement(
+                        MinecraftMathAdapter.toMinecraft(
+                                frame.down().multiply(.09856)
+                        )
+                );
                 actor.aiStep();
-                Vec3 local = frame.worldToLocal(actor.velocityAtTravel);
-                check(Math.abs(local.x) < 1e-12 && Math.abs(local.z) < 1e-12, "zero-input aiStep tangent tick=" + tick);
+                Vec3d local = frame.worldToLocal(
+                        MinecraftMathAdapter.toVec3d(
+                                actor.velocityAtTravel
+                        )
+                );
+                check(Math.abs(local.x()) < 1e-12 && Math.abs(local.z()) < 1e-12, "zero-input aiStep tangent tick=" + tick);
                 near(start, actor.position(), "aiStep supported fixed P tick=" + tick);
                 check(actor.onGround() && runtime(actor).restingContactSnapshot() != null, "stable aiStep support");
                 check(revision == runtime(actor).bodyShapeRevision(), "no stationary shape churn");
@@ -371,17 +462,50 @@ final class GeometryAuthorityChecks {
         } finally { actor.discard(); level.setBlock(block, saved, 18); }
     }
 
-    private static Actor player(ServerLevel level, String name, Vec3 p, Quaterniond orientation) {
+    /** Native endpoint writes invalidate support; only a fresh query can re-prove it. */
+    private static void softPacketEndpointSupportInvalidation(ServerLevel level) {
+        var block = new BlockPos(8, 299, 8);
+        var saved = level.getBlockState(block);
+        var initial = GravityFrame.fromDown(new Vec3d(-.5, -Math.sqrt(.75), 0), .08);
+        level.setBlock(block, Blocks.STONE.defaultBlockState(), 18);
+        var server = supportedActor(level, "SoftPacket", initial, 8.5);
+        try {
+            server.setDeltaMovement(Vec3.ZERO);
+            Vec3 endpoint = server.position().add(0, -5e-9, 5e-5);
+            send(server, endpoint);
+            near(endpoint, server.position(), "tiny packet endpoint remains authoritative");
+            check(server.playerMoves == 1 && server.corrections == 0, "one native solve without correction");
+            check(server.supportAfterPlayerMove != null && server.supportAfterPlayerMove.planePreservationEligible(),
+                    "PLAYER solve proves finite support before native endpoint write");
+            check(runtime(server).restingContactSnapshot() == null, "endpoint invalidates previous support");
+            check(cc.sighs.gravityengine.gravity.integration.collision.GravityCurrentSupportQuery
+                    .stableSupport(server).isPresent(), "current-scene query re-proves support at final endpoint");
+            server.setPos(server.position().add(0, 2, 0));
+            check(runtime(server).consumeSoftPositionSupportRevalidation().isEmpty()
+                    && runtime(server).restingContactSnapshot() == null, "hard boundary erases support hints");
+            System.out.println("SOFT_PACKET_SUPPORT_INVALIDATION_PASSED");
+        } finally { server.discard(); level.setBlock(block, saved, 18); }
+    }
+
+    private static Actor player(
+            ServerLevel level,
+            String name,
+            Vec3 p,
+            Quatd orientation
+    ) {
         var profile = new GameProfile(UUID.randomUUID(), name);
         var actor = new Actor(level, profile);
         var connection = new Connection(PacketFlow.SERVERBOUND) {
             @Override public void send(Packet<?> packet) {}
             @Override public void send(Packet<?> packet, net.minecraft.network.PacketSendListener listener) {}
         };
-        actor.connection = new ServerGamePacketListenerImpl(level.getServer(), connection, actor,
+        var listener = new ServerGamePacketListenerImpl(level.getServer(), connection, actor,
                 CommonListenerCookie.createInitial(profile, false)) {
             @Override public void send(Packet<?> packet) {
                 if (packet instanceof net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket) actor.corrections++;
+                if (packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket custom
+                        && custom.payload() instanceof cc.sighs.gravityengine.network.ClientboundPlayerBodyCommitPayload body
+                        && body.correction() != null) actor.corrections++;
                 if (packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket custom
                         && custom.payload() instanceof cc.sighs.gravityengine.network.ClientboundBodyAttitudeStatePayload body
                         && body.entityUuid().equals(actor.getUUID()))
@@ -390,16 +514,41 @@ final class GeometryAuthorityChecks {
         };
         actor.setPos(p);
         if (orientation != null) {
-            var down = orientation.transform(new org.joml.Vector3d(0, -1, 0));
-            GravityApplicationCoordinator.applyDirectAssignment(actor,
-                    new GravityState(new Vec3(down.x, down.y, down.z), .08));
+            var down = orientation.transform(
+                    new Vec3d(0, -1, 0)
+            );
+            assignFixture(actor,
+                    new GravityState(down, .08));
         }
+        actor.connection = listener;
         level.addNewPlayer(actor);
         return actor;
     }
 
+    /**
+     * Fixture setup only: the synthetic actor is temporarily treated as a
+     * non-networked server actor so body installation can be exercised
+     * directly. Production networked players still change body only at the
+     * completed connection-tick handoff.
+     */
+    private static void assignFixture(
+            Actor actor,
+            GravityState state
+    ) {
+        var connection = actor.connection;
+        actor.connection = null;
+        try {
+            GravityApplicationCoordinator.applyDirectAssignment(
+                    actor,
+                    state
+            );
+        } finally {
+            actor.connection = connection;
+        }
+    }
+
     private static void selectFreeAttitude(Actor actor) {
-        GravityApplicationCoordinator.applyDirectAssignment(actor,
+        assignFixture(actor,
                 new GravityState(GravityFrame.DEFAULT.down(), .001));
         actor.setOnGround(false);
         actor.setSprinting(true);
@@ -413,7 +562,7 @@ final class GeometryAuthorityChecks {
             selectFreeAttitude(actor);
             var start = actor.position();
             var box = actor.getBoundingBox();
-            var q = new Quaterniond().rotationZ(.3);
+            var q = Quatd.rotationZ(.3);
             var update = new ServerboundBodyAttitudeStatePayload(
                 level.dimension().location(),
                 BodyAttitudeRuntime.Config.server().generation(),
@@ -421,22 +570,169 @@ final class GeometryAuthorityChecks {
                 BodyAttitudeOwnership.ACTIVE,
                 BodyAttitudeSuspensionReason.NONE,
                 q,
-                new org.joml.Quaterniond(q).rotateY(-Math.toRadians(0)).rotateX(Math.toRadians(0)),
+                q.multiply(
+                        Quatd.rotationY(-Math.toRadians(0))
+                ).multiply(
+                        Quatd.rotationX(Math.toRadians(0))
+                ),
                 false,
+                false,
+                cc.sighs.gravityengine.api.math.Vec3d.ZERO,
                 BodyAttitudeStreamEpochService.ensureServerStream(actor),
                 1);
             check(BodyAttitudeStateReceiver.receive(actor, update), "actor update accepted independently");
             var accepted = BodyAttitudeRuntime.Access.component(actor).snapshot();
-            check(accepted.state().currentWorldFromBody().equals(q, 1e-12), "Q installed before movement");
+            check(
+                    Quatd.angularDistance(
+                            accepted.state().currentWorldFromBody(),
+                            q
+                    ) < 1e-12,
+                    "Q installed before movement"
+            );
             check(actor.position().equals(start) && actor.getBoundingBox().equals(box), "Q leaves P and collider unchanged");
             actor.disturbAfterMove = forceNativeRejection;
             var target = start.add(.1, 0, 0);
             send(actor, target);
             check(actor.playerMoves == 1, "exactly one native PLAYER move");
             near(forceNativeRejection ? start : target, actor.position(), "Vanilla owns endpoint and correction");
-            check(BodyAttitudeRuntime.Access.component(actor).snapshot().state().currentWorldFromBody().equals(q, 1e-12),
+            check(
+                    Quatd.angularDistance(
+                            BodyAttitudeRuntime.Access.component(actor)
+                                    .snapshot().state()
+                                    .currentWorldFromBody(),
+                            q
+                    ) < 1e-12,
                     "movement acceptance or correction does not roll back independent Q");
-        } finally { actor.discard(); }
+       } finally { actor.discard(); }
+    }
+
+    /**
+     * Network authority control.
+     *
+     * <p>The owning client may report that its state carries {@code L_world},
+     * but only the server-observed locomotion contract decides whether a
+     * dynamic owner is installed, and the accepted server config supplies the
+     * effective inertia. Neither a packet flag nor an uplink inertia value can
+     * create a second authority.</p>
+     */
+    private static void dynamicAttitudePacketAuthority(ServerLevel level) {
+        var nonFlying = player(level, "DynamicOwnerRejected",
+                new Vec3(8.5, 310, 8.5), null);
+        try {
+            long stream =
+                    BodyAttitudeStreamEpochService.ensureServerStream(
+                            nonFlying);
+            var invalidDynamic =
+                    new ServerboundBodyAttitudeStatePayload(
+                            level.dimension().location(),
+                            BodyAttitudeRuntime.Config.server()
+                                    .generation(),
+                            true,
+                            BodyAttitudeOwnership.ACTIVE,
+                            BodyAttitudeSuspensionReason.NONE,
+                            Quatd.IDENTITY,
+                            Quatd.IDENTITY,
+                            false,
+                            true,
+                            new Vec3d(0.25D, 0.0D, 0.0D),
+                            stream,
+                            1L);
+            check(
+                    !BodyAttitudeStateReceiver.receive(
+                            nonFlying,
+                            invalidDynamic),
+                    "client cannot declare a dynamic owner "
+                            + "outside the server Elytra contract");
+        } finally {
+            nonFlying.discard();
+        }
+
+        var flying = player(level, "DynamicOwnerAccepted",
+                new Vec3(8.5, 310, 8.5), null);
+        try {
+            flying.startFallFlying();
+            long stream =
+                    BodyAttitudeStreamEpochService.ensureServerStream(
+                            flying);
+            /*
+             * The server requires a dynamic owner while fall-flying. A
+             * pose-only client state must not silently become L_world = 0.
+             */
+            var missingDynamics =
+                    new ServerboundBodyAttitudeStatePayload(
+                            level.dimension().location(),
+                            BodyAttitudeRuntime.Config.server()
+                                    .generation(),
+                            true,
+                            BodyAttitudeOwnership.ACTIVE,
+                            BodyAttitudeSuspensionReason.NONE,
+                            Quatd.IDENTITY,
+                            Quatd.IDENTITY,
+                            false,
+                            false,
+                            Vec3d.ZERO,
+                            stream,
+                            1L);
+            check(
+                    !BodyAttitudeStateReceiver.receive(
+                            flying,
+                            missingDynamics),
+                    "the server Elytra contract rejects "
+                            + "a pose-only uplink");
+
+            Vec3d momentum =
+                    new Vec3d(0.5D, -0.25D, 0.125D);
+            var dynamic =
+                    new ServerboundBodyAttitudeStatePayload(
+                            level.dimension().location(),
+                            BodyAttitudeRuntime.Config.server()
+                                    .generation(),
+                            true,
+                            BodyAttitudeOwnership.ACTIVE,
+                            BodyAttitudeSuspensionReason.NONE,
+                            Quatd.IDENTITY,
+                            Quatd.IDENTITY,
+                            false,
+                            true,
+                            momentum,
+                            stream,
+                            2L);
+            check(
+                    BodyAttitudeStateReceiver.receive(
+                            flying,
+                            dynamic),
+                    "the server Elytra contract accepts q + L_world");
+
+            var installed =
+                    BodyAttitudeRuntime.Access
+                            .component(flying)
+                            .state();
+            check(
+                    installed.hasAngularDynamics(),
+                    "accepted Elytra packet installs dynamic state");
+            check(
+                    installed.angularMomentum()
+                            .orElseThrow()
+                            .angularMomentumWorld()
+                            .equals(momentum),
+                    "accepted packet preserves "
+                            + "the client-produced L_world");
+            check(
+                    installed.effectiveInertia()
+                            .orElseThrow()
+                            .equals(
+                                    BodyAttitudeRuntime.Config
+                                            .server()
+                                            .simulation()
+                                            .elytraEffectiveAngularInertia()
+                            ),
+                    "the receiving server config owns "
+                            + "the installed inertia");
+        } finally {
+            flying.discard();
+        }
+        System.out.println(
+                "DYNAMIC_ATTITUDE_PACKET_AUTHORITY_PASSED");
     }
 
     private static void centerFixedBody(ServerLevel level) {
@@ -444,10 +740,14 @@ final class GeometryAuthorityChecks {
         try {
             selectFreeAttitude(actor);
             var p = actor.position(); var box = actor.getBoundingBox();
-            var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime();
+            var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState();
             var frame = runtime.geometryReferenceFrame();
             for (int i = 1; i <= 100; i++) {
-                var q = new Quaterniond().rotationXYZ(.03*i, .01*i, .02*i);
+                var q = Quatd.rotationZYX(
+                        .02*i,
+                        .01*i,
+                        .03*i
+                );
                 var update = new ServerboundBodyAttitudeStatePayload(
                 level.dimension().location(),
                 BodyAttitudeRuntime.Config.server().generation(),
@@ -455,15 +755,27 @@ final class GeometryAuthorityChecks {
                 BodyAttitudeOwnership.ACTIVE,
                 BodyAttitudeSuspensionReason.NONE,
                 q,
-                new org.joml.Quaterniond(q).rotateY(-Math.toRadians(i)).rotateX(Math.toRadians(0)),
+                q.multiply(
+                        Quatd.rotationY(-Math.toRadians(i))
+                ).multiply(
+                        Quatd.rotationX(Math.toRadians(0))
+                ),
                 false,
+                false,
+                cc.sighs.gravityengine.api.math.Vec3d.ZERO,
                 BodyAttitudeStreamEpochService.ensureServerStream(actor),
                 i);
                 check(BodyAttitudeStateReceiver.receive(actor, update), "independent Q installs");
                 check(actor.position().equals(p) && actor.getBoundingBox().equals(box) && actor.playerMoves == 0,
                         "attitude receipt never moves P or collision body");
                 check(runtime.geometryReferenceFrame() == frame, "reference owner is unchanged");
-                check(BodyAttitudeRuntime.Access.component(actor).state().currentWorldFromBody().equals(q, 1e-12),
+                check(
+                        Quatd.angularDistance(
+                                BodyAttitudeRuntime.Access.component(actor)
+                                        .state()
+                                        .currentWorldFromBody(),
+                                q
+                        ) < 1e-12,
                         "free Q remains controllable");
             }
         } finally { actor.discard(); }
@@ -486,6 +798,7 @@ final class GeometryAuthorityChecks {
         Vec3 recovery = Vec3.ZERO;
         cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody oldMoveBody;
         boolean disturbAfterMove;
+        cc.sighs.gravityengine.gravity.runtime.RestingContactSnapshot supportAfterPlayerMove;
         final java.util.List<cc.sighs.gravityengine.network.ClientboundBodyAttitudeStatePayload> bodyReplies = new java.util.ArrayList<>();
         Actor(ServerLevel level, GameProfile profile) {
             super(level.getServer(), level, profile, net.minecraft.server.level.ClientInformation.createDefault());
@@ -507,6 +820,7 @@ final class GeometryAuthorityChecks {
             oldMoveBody = VanillaBodyOccupancy.capture(this);
             moveStart = position();
             super.move(type, movement);
+            if (type == MoverType.PLAYER) supportAfterPlayerMove = runtime(this).restingContactSnapshot();
             if (type==MoverType.PLAYER && disturbAfterMove) setPos(position().add(1,0,0));
         }
     }
@@ -514,6 +828,11 @@ final class GeometryAuthorityChecks {
     private static void near(Vec3 expected, Vec3 actual, String message) {
         check(expected.distanceTo(actual) <= 1e-7, message + " expected=" + expected + " actual=" + actual);
     }
+
+    private static boolean sameCollisionAxis(GravityFrame first, GravityFrame second) {
+        return first.down().distance(second.down()) < 1e-12;
+    }
+
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
     }

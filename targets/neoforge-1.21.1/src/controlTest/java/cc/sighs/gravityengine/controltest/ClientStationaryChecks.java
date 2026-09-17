@@ -1,14 +1,15 @@
 package cc.sighs.gravityengine.controltest;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityState;
 import cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator;
-import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
-
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.network.GravitySyncService;
-import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
@@ -36,7 +37,7 @@ final class ClientStationaryChecks {
     private static Snapshot clientRead;
     private static CompletableFuture<Void> setup;
 
-    private record Snapshot(Vec3 position, Vec3 down,
+    private record Snapshot(Vec3 position, Vec3d down,
                             cc.sighs.gravityengine.gravity.kinematic.geometry.CharacterCapsule body, boolean grounded) {}
 
     static boolean tick(Minecraft mc) {
@@ -44,7 +45,10 @@ final class ClientStationaryChecks {
             if (phase == 0) mc.player.connection.getConnection().channel().pipeline()
                     .addBefore("packet_handler", "stationary_corrections", new ChannelDuplexHandler() {
                         @Override public void channelRead(ChannelHandlerContext context, Object message) throws Exception {
-                            if (message instanceof ClientboundPlayerPositionPacket) corrections.incrementAndGet();
+                            if (message instanceof ClientboundPlayerPositionPacket
+                                    || message instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket custom
+                                    && custom.payload() instanceof cc.sighs.gravityengine.network.ClientboundPlayerBodyCommitPayload body
+                                    && body.correction() != null) corrections.incrementAndGet();
                             super.channelRead(context, message);
                         }
                         @Override public void write(ChannelHandlerContext context,Object message,ChannelPromise promise) throws Exception {
@@ -69,7 +73,13 @@ final class ClientStationaryChecks {
                 }
                 player.setDeltaMovement(Vec3.ZERO);
                 player.connection.teleport(cx - 3, 350, 8.5, 0, 0);
-                GravityApplicationCoordinator.applyDirectAssignment(player, new GravityState(down, .08));
+                GravityApplicationCoordinator.applyDirectAssignment(
+                        player,
+                        new GravityState(
+                                MinecraftMathAdapter.toVec3d(down),
+                                .08
+                        )
+                );
                 GravitySyncService.syncPlayer(player);
                 player.connection.resumeFlushing();
             }, mc.getSingleplayerServer());
@@ -83,7 +93,14 @@ final class ClientStationaryChecks {
             setup = CompletableFuture.runAsync(() -> {
                 var player = mc.getSingleplayerServer().getPlayerList().getPlayer(id);
                 var frame = GravityFrameAccess.authoritativeFrame(player);
-                check(frame.down().distanceTo(DOWN[phase]) < 1e-10, "fixture frame settled in clear space");
+                check(
+                        frame.down().distance(
+                                MinecraftMathAdapter.toVec3d(
+                                        DOWN[phase]
+                                )
+                        ) < 1e-10,
+                        "fixture frame settled in clear space"
+                );
                 int cx = 32 + phase * 32;
                 // Normal operations on both sides establish tangent continuity
                 // before the support teleport. Do not seed a canonical frame on one side.
@@ -101,7 +118,7 @@ final class ClientStationaryChecks {
         }
         if (ticks < 60) return false; // assignment, chunks, teleport acknowledgement and contact settle
         var player = mc.player;
-        var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime();
+        var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState();
         var frame = GravityFrameAccess.authoritativeFrame(player);
         if (ticks == 60) {
             start = player.position(); shapeRevision = runtime.bodyShapeRevision();
@@ -112,15 +129,23 @@ final class ClientStationaryChecks {
         if(ticks==155) latencyEnabled=false;
         check(player.onGround(), "client supported P=" + player.position() + " frame=" + frame.down());
         check(player.position().distanceTo(start) < 1e-7, "client fixed P start=" + start + " actual=" + player.position());
-        Vec3 local = frame.worldToLocal(player.getDeltaMovement());
-        check(Math.abs(local.x) < 1e-10 && Math.abs(local.z) < 1e-10, "client tangent velocity=" + local);
+        Vec3d local = frame.worldToLocal(
+                MinecraftMathAdapter.toVec3d(
+                        player.getDeltaMovement()
+                )
+        );
+        check(
+                Math.abs(local.x()) < 1e-10
+                        && Math.abs(local.z()) < 1e-10,
+                "client tangent velocity=" + local
+        );
         check(runtime.bodyShapeRevision() == shapeRevision, "client shape churn");
         check(corrections.get() == baselineCorrections, "recurring position correction");
         if (serverRead != null && serverRead.isDone()) {
             Snapshot server = serverRead.join();
             check(server.grounded(), "server supported");
             check(server.position().distanceTo(clientRead.position()) < 1e-7, "server/client P agreement");
-            check(server.down().distanceTo(clientRead.down()) < 1e-12, "server/client collision axis agreement");
+            check(server.down().distance(clientRead.down()) < 1e-12, "server/client collision axis agreement");
             check(server.body().radius()==clientRead.body().radius()
                     && server.body().halfSegmentLength()==clientRead.body().halfSegmentLength()
                     && server.body().axis().distance(clientRead.body().axis())<1e-12,
@@ -128,12 +153,12 @@ final class ClientStationaryChecks {
             serverRead = null;
         }
         if (serverRead == null) {
-            clientRead = new Snapshot(player.position(), frame.down(), GravityEntityGeometry.exactBody(player,frame), player.onGround());
+            clientRead = new Snapshot(player.position(), frame.down(), GravityEntityGeometry.exactBody(player), player.onGround());
             var id = player.getUUID();
             serverRead = CompletableFuture.supplyAsync(() -> {
                 var server = mc.getSingleplayerServer().getPlayerList().getPlayer(id);
                 var reference = GravityFrameAccess.authoritativeFrame(server);
-                return new Snapshot(server.position(), reference.down(), GravityEntityGeometry.exactBody(server,reference), server.onGround());
+                return new Snapshot(server.position(), reference.down(), GravityEntityGeometry.exactBody(server), server.onGround());
             }, mc.getSingleplayerServer());
         }
         if (ticks < 160) return false;

@@ -1,7 +1,11 @@
 .gradle/
+.tmp/
 build/
 run/
 out/
 *.iml
 .idea/
-
+targets/*/logs/
+logs/
+.VSCodeCounter/
+docs/*

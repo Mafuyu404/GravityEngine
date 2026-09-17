@@ -1,41 +1,115 @@
 package cc.sighs.gravityengine.gravity.field;
 
-import cc.sighs.gravityengine.gravity.model.GravityFieldKey;
-import net.minecraft.resources.ResourceKey;
+import cc.sighs.gravityengine.gravity.model.GravityFieldId;
 import net.minecraft.world.level.Level;
-import org.joml.Vector3dc;
 
-import java.util.*;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.Objects;
 
-/**
- * Level-instance-local runtime owner of generic gravity fields.
- *
- * <p>This is the lifecycle authority for every {@link GravityFieldInstance},
- * regardless of producer. Block-backed gravity cores register their
- * mathematical field and deterministic key directly here; there is no
- * separate source registry.</p>
- *
- * <p>The runtime wrapper owns only Level lifecycle. Mathematical evaluation and
- * spatial indexing remain inside the field domain.</p>
- */
-public final class GravityFieldRuntime {
+/** Level session owner and sole provider aggregation boundary. Common owns
+ * pure composition and publication indexing. Query coverage is never cached
+ * as readiness; unload closes every provider and discards all live sources. */
+public final class GravityFieldRuntime implements GravityFieldEvaluationSource {
+    private boolean closed;
+    private boolean evaluating;
+    private final Level level;
+    private final Map<net.minecraft.resources.ResourceLocation, cc.sighs.gravityengine.api.GravityFieldProvider> providers;
+    // Publication-domain membership is independent of source structural order.
+    private final Map<GravityFieldId, net.minecraft.resources.ResourceLocation> publicationOwners = new java.util.HashMap<>();
+
+    @Override
+    public boolean revisionCoversEvaluation() { return false; }
+
+    @Override
+    public long publicationRevision() { return registry.publicationRevision(); }
+
+    @Override
+    public cc.sighs.gravityengine.gravity.acceleration.GravityFieldEvaluation evaluate(
+            cc.sighs.gravityengine.api.field.GravityFieldQuery query) {
+        requireOpenThread();
+        Objects.requireNonNull(query, "query");
+        if (evaluating) throw new IllegalStateException("recursive field provider evaluation");
+        evaluating = true;
+        try {
+            var coverage = level.isClientSide()
+                    ? cc.sighs.gravityengine.api.field.FieldCoverage.INCOMPLETE
+                    : cc.sighs.gravityengine.api.field.FieldCoverage.COMPLETE;
+            var contributions = new java.util.ArrayList<cc.sighs.gravityengine.api.field.GravityContribution>();
+            for (var provider : providers.values()) {
+                var result = Objects.requireNonNull(provider.evaluate(query), "field provider result");
+                if (result.coverage() == cc.sighs.gravityengine.api.field.FieldCoverage.INCOMPLETE) coverage = result.coverage();
+                contributions.addAll(result.contributions());
+            }
+            return new cc.sighs.gravityengine.gravity.acceleration.GravityFieldEvaluation(query,
+                    GravityFieldService.composeContributions(contributions, query), coverage, publicationRevision());
+        } finally {
+            evaluating = false;
+        }
+    }
+
+    public boolean publish(net.minecraft.resources.ResourceLocation provider, GravityFieldInstance instance) {
+        requireOpenThread();
+        if (evaluating) throw new IllegalStateException("publication mutation during field evaluation");
+        requireProvider(provider);
+        var owner = publicationOwners.get(instance.id());
+        if (owner != null && !owner.equals(provider)) throw new IllegalArgumentException("field identity belongs to another provider: " + instance.id());
+        boolean accepted = registry.put(instance);
+        if (accepted) publicationOwners.put(instance.id(), provider);
+        return accepted;
+    }
+
+    public java.util.List<cc.sighs.gravityengine.api.field.GravityContribution> samplePublications(
+            net.minecraft.resources.ResourceLocation provider, cc.sighs.gravityengine.api.field.GravityFieldQuery query) {
+        requireOpenThread();
+        requireProvider(provider);
+        return GravityFieldService.contributions(registry.query(query.position()).stream()
+                .filter(f -> provider.equals(publicationOwners.get(f.id()))).toList(), query);
+    }
+
+    private void requireProvider(net.minecraft.resources.ResourceLocation provider) {
+        if (!providers.containsKey(provider)) throw new IllegalArgumentException("unregistered field provider: " + provider);
+    }
+
+    private void requireOpenThread() {
+        if (closed) throw new IllegalStateException("field runtime is closed");
+        if (level instanceof net.minecraft.server.level.ServerLevel server && !server.getServer().isSameThread()) {
+            throw new IllegalStateException("field operation must run on the owning Level thread");
+        }
+    }
+
     private static final Map<Level, GravityFieldRuntime> INSTANCES =
             new IdentityHashMap<>();
 
-    private final ResourceKey<Level> dimension;
-    private final GravityFieldIndex index;
+    private final GravityFieldRegistry registry =
+            new GravityFieldRegistry();
+
+    private final cc.sighs.gravityengine.gravity.integration.FallingBlockRechecks fallingBlocks =
+            new cc.sighs.gravityengine.gravity.integration.FallingBlockRechecks();
+
+    public cc.sighs.gravityengine.gravity.integration.FallingBlockRechecks fallingBlocks() {
+        return fallingBlocks;
+    }
 
     private GravityFieldRuntime(Level level) {
-        Objects.requireNonNull(level, "level");
-        this.dimension = level.dimension();
-        this.index = new GravityFieldIndex(this.dimension);
+        this.level = level;
+        this.providers = level instanceof net.minecraft.server.level.ServerLevel server
+                ? GravityFieldProviderRegistry.createSessions(server) : Map.of();
     }
 
     public static GravityFieldRuntime get(Level level) {
         Objects.requireNonNull(level, "level");
         synchronized (INSTANCES) {
-            return INSTANCES.computeIfAbsent(level, GravityFieldRuntime::new);
+            return INSTANCES.computeIfAbsent(
+                    level,
+                    ignored -> new GravityFieldRuntime(level)
+            );
         }
+    }
+
+    /** Non-creating access for world lifecycle and high-frequency native hooks. */
+    public static GravityFieldRuntime getIfPresent(Level level) {
+        synchronized (INSTANCES) { return INSTANCES.get(level); }
     }
 
     /**
@@ -60,83 +134,87 @@ public final class GravityFieldRuntime {
         }
     }
 
+    public static void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
+        synchronized (INSTANCES) {
+            var runtime = INSTANCES.get(level);
+            if (runtime != null) runtime.fallingBlocks.changed(level,pos);
+        }
+    }
+
+    /** Cleanup callbacks must never recreate a runtime already removed by level unload. */
+    public static void chunkUnloaded(Level level, net.minecraft.world.level.ChunkPos pos) {
+        synchronized (INSTANCES) {
+            var runtime = INSTANCES.get(level);
+            if (runtime != null) {
+                runtime.fallingBlocks.unloaded(pos);
+            }
+        }
+    }
+
     /** Removes one field without constructing a runtime during unload. */
-    public static boolean remove(Level level, GravityFieldKey key) {
+    public static boolean remove(Level level, GravityFieldId id) {
         Objects.requireNonNull(level, "level");
-        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(id, "id");
         GravityFieldRuntime runtime;
         synchronized (INSTANCES) {
             runtime = INSTANCES.get(level);
         }
-        return runtime != null && runtime.remove(key);
+        if (runtime == null) return false;
+        runtime.requireOpenThread();
+        if (runtime.evaluating) throw new IllegalStateException("publication mutation during field evaluation");
+        boolean removed = runtime.registry.remove(id);
+        if (removed) runtime.publicationOwners.remove(id);
+        return removed;
     }
 
     /**
      * Revision-aware removal without constructing a runtime during unload.
      *
-     * <p>Used by the block lifecycle adapter so a stale owner cannot remove a
-     * newer accepted instance of the same key.</p>
+     * <p>Used by the publication lease so a stale owner cannot remove a newer
+     * accepted instance of the same id.</p>
      */
     public static boolean remove(
             Level level,
-            GravityFieldKey key,
+            GravityFieldId id,
             long expectedRevision
     ) {
         Objects.requireNonNull(level, "level");
-        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(id, "id");
         GravityFieldRuntime runtime;
         synchronized (INSTANCES) {
             runtime = INSTANCES.get(level);
         }
-        return runtime != null
-                && runtime.remove(key, expectedRevision);
-    }
-
-    public ResourceKey<Level> dimension() {
-        return this.dimension;
-    }
-
-    public boolean put(GravityFieldInstance instance) {
-        Objects.requireNonNull(instance, "instance");
-        return this.index.put(instance);
-    }
-
-    public boolean remove(GravityFieldKey key) {
-        Objects.requireNonNull(key, "key");
-        return this.index.remove(key);
+        if (runtime == null) return false;
+        runtime.requireOpenThread();
+        if (runtime.evaluating) throw new IllegalStateException("publication mutation during field evaluation");
+        boolean removed = runtime.registry.remove(id, expectedRevision);
+        if (removed) runtime.publicationOwners.remove(id);
+        return removed;
     }
 
     /**
-     * Removes the registered instance only while it still matches the
-     * requesting revision.
+     * The loader-neutral registration authority for this level.
+     *
+     * <p>Minecraft-facing callers convert their platform values at this
+     * boundary and then use only the common registry; physics and composition
+     * code never receives a {@link Level}.</p>
      */
-    public boolean remove(
-            GravityFieldKey key,
-            long expectedRevision
-    ) {
-        Objects.requireNonNull(key, "key");
-        return this.index.remove(key, expectedRevision);
+    public GravityFieldRegistry registry() {
+        return this.registry;
     }
 
-    public Optional<GravityFieldInstance> get(GravityFieldKey key) {
-        Objects.requireNonNull(key, "key");
-        return this.index.get(key);
-    }
-
-    public List<GravityFieldInstance> query(Vector3dc position) {
-        Objects.requireNonNull(position, "position");
-        return this.index.query(position);
-    }
-
-    public List<GravityFieldInstance> allInstances() {
-        return this.index.allInstances();
-    }
-
-    public int size() {
-        return this.index.size();
-    }
-
-    public void clear() {
-        this.index.clear();
+    private void clear() {
+        this.closed = true;
+        this.publicationOwners.clear();
+        this.fallingBlocks.clear();
+        this.registry.clear();
+        RuntimeException failure = null;
+        for (var provider : providers.values()) {
+            try { provider.close(); }
+            catch (RuntimeException exception) {
+                if (failure == null) failure = exception; else failure.addSuppressed(exception);
+            }
+        }
+        if (failure != null) throw failure;
     }
 }

@@ -17,6 +17,14 @@ apply from: file(
 )
 
 /*
+ * ModDevGradle's mod model directly references :common's source set below.
+ *
+ * Evaluate the common project first so its Java source sets are available
+ * during configuration of this target.
+ */
+evaluationDependsOn(':common')
+
+/*
  * This target is an independent Gradle root, therefore the shared identity
  * must be installed into this Gradle model explicitly.
  *
@@ -42,9 +50,13 @@ java {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 21
+    options.compilerArgs << '-Xmaxerrs' << '2000'
+    options.compilerArgs.add('-Xlint:deprecation')
 }
 
 repositories {
+    mavenCentral()
+
     exclusiveContent {
         forRepository {
             maven {
@@ -64,6 +76,12 @@ repositories {
  * controlTest is a separate NeoForge development mod.
  */
 sourceSets {
+    // Runtime variant for the strict server, isolated from ordinary no-Sable runs.
+    sableVerification {
+        java.setSrcDirs([])
+        resources.setSrcDirs([])
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
     controlTest {
         java.srcDirs = ['src/controlTest/java']
         resources.srcDirs = ['src/controlTest/resources']
@@ -77,19 +95,6 @@ sourceSets {
     }
 }
 
-/*
- * The loader-neutral common kernel is distributed as part of the same
- * GravityEngine mod.
- *
- * ModDevGradle should still see only one production source set. Augmenting
- * main.output makes common classes available through MOD_CLASSES in dev runs
- * while avoiding a second source set named "main".
- */
-sourceSets.main.output.dir(
-        project(':common').layout.buildDirectory.dir('classes/java/main'),
-        builtBy: ':common:classes'
-)
-
 configurations {
     controlTestImplementation.extendsFrom implementation
     controlTestCompileOnly.extendsFrom compileOnly
@@ -97,50 +102,160 @@ configurations {
     controlTestAnnotationProcessor.extendsFrom annotationProcessor
 }
 
+/*
+ * The JUnit test source set must observe the same Minecraft/loader compile and
+ * runtime classpath as the mod itself. ModDevGradle installs the game
+ * artifacts on the main source set, so the ordinary Gradle defaults leave
+ * tests that touch Vanilla types unable to load them at runtime.
+ */
+sourceSets.test.compileClasspath +=
+        sourceSets.main.compileClasspath
+sourceSets.test.runtimeClasspath +=
+        sourceSets.main.output +
+                sourceSets.main.runtimeClasspath
+
+def contactVerificationRequested = gradle.startParameter.taskNames.any {
+    it == 'contactCompatibilityVerification' || it.endsWith(':contactCompatibilityVerification')
+} && !gradle.startParameter.taskNames.any {
+    it == 'dynamicsCoreVerification' || it.endsWith(':dynamicsCoreVerification')
+            || it == 'controlBoundaryVerification' || it.endsWith(':controlBoundaryVerification')
+} // Explicit full verification always wins when both gates are requested.
+def controlVerificationRequested = contactVerificationRequested ||
+        gradle.startParameter.taskNames.any {
+            it == 'controlBoundaryVerification'
+                    || it == 'dynamicsCoreVerification'
+                    || it.endsWith(':controlBoundaryVerification')
+                    || it.endsWith(':dynamicsCoreVerification')
+        }
+
 def enableControlTests =
         providers.gradleProperty('controlBoundaryChecks')
                 .map { it.toBoolean() }
-                .orElse(false)
+                .orElse(controlVerificationRequested)
 
+def controlRunDirectory = layout.projectDirectory.dir(contactVerificationRequested
+        ? 'run/contact-verification' : 'run/control-verification')
+
+/*
+ * GravityEngine consists of two production source sets:
+ *
+ *   - this target's loader-specific main
+ *   - :common's loader-neutral main
+ *
+ * They belong to ONE NeoForge mod.
+ *
+ * This is intentionally expressed through ModDevGradle's mod model instead
+ * of mutating sourceSets.main.output. That keeps Gradle/IDEA source ownership
+ * accurate while still putting both outputs into the same MOD_CLASSES entry.
+ */
 neoForge {
     version = neoforge_version
 
     runs {
+        // Opt-in game JVM properties, never Gradle daemon JVM arguments.
+        configureEach {
+            [geDebugGravity: 'debugGravity', geDebugMovement: 'debugMovement',
+             geDebugSpatialState: 'debugSpatialState', geDebugView: 'debugView',
+             geDebugViewStacks: 'debugViewStacks', geDebugEntity: 'debugEntity',
+             geDebugSide: 'debugSide'].each { gradleName, systemName ->
+                def configured = providers.gradleProperty(gradleName)
+                if (configured.isPresent()) {
+                    systemProperty "gravityengine.${systemName}", configured.get()
+                }
+            }
+        }
         client {
             client()
+            if (enableControlTests.get()) {
+                gameDirectory = layout.projectDirectory.dir('run/control-client')
+            }
         }
 
+        sableVerification {
+            server()
+            sourceSet = sourceSets.sableVerification
+            gameDirectory = layout.projectDirectory.dir('run/sable-verification')
+            programArgument '--nogui'
+            programArgument '--port'
+            programArgument '0'
+            systemProperty 'gravityengine.contactCompatibilityChecks', 'true'
+            systemProperty 'gravityengine.requireSableChecks', 'true'
+            systemProperty 'gravityengine.expectedSableVersion', sable_version
+        }
         server {
             server()
+            if (contactVerificationRequested) systemProperty 'gravityengine.contactCompatibilityChecks', 'true'
             programArgument '--nogui'
+            if (enableControlTests.get()) {
+                gameDirectory = controlRunDirectory
+                programArgument '--port'
+                programArgument '0'
+            }
         }
     }
 
     mods {
         "${mod_id}" {
-            /*
-             * main.output already contains:
-             *
-             * - NeoForge target classes/resources
-             * - common classes
-             */
-            sourceSet(sourceSets.main)
+            sourceSet sourceSets.main
+            sourceSet project(':common').sourceSets.main
         }
 
-        if (enableControlTests.get()) {
-            "gravityengine_control_tests" {
-                sourceSet(sourceSets.controlTest)
-            }
+        "gravityengine_control_tests" {
+            sourceSet sourceSets.controlTest
         }
     }
 }
 
+// Fixed run configuration: indirect aggregate dependencies need no task-name detection.
+neoForge.runs.named('client') {
+    loadedMods = provider { enableControlTests.get() ? neoForge.mods.toList() : [neoForge.mods.getByName(mod_id)] }
+}
+neoForge.runs.named('server') {
+    loadedMods = provider { enableControlTests.get() ? neoForge.mods.toList() : [neoForge.mods.getByName(mod_id)] }
+}
+
 dependencies {
+    sableVerificationRuntimeOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") { transitive = false }
+
+    def starminerRuntimeJar =
+            providers.gradleProperty('starminerRuntimeJar').orNull
+
+    if (starminerRuntimeJar != null) {
+        def jarFile = project.file(starminerRuntimeJar)
+
+        if (!jarFile.isFile()) {
+            throw new GradleException(
+                    "StarminerR runtime JAR does not exist: ${jarFile}"
+            )
+        }
+
+        runtimeOnly files(jarFile)
+    }
     /*
-     * Compile dependency and ordinary Gradle project relationship.
+     * Ordinary Java/Gradle dependency relationship.
+     *
+     * This is still required independently of the ModDevGradle mod source-set
+     * declaration above:
+     *
+     *   implementation -> compile/runtime dependency graph
+     *   neoForge.mods   -> FML/ModDevGradle mod folder model
      */
     implementation project(':common')
 
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.joml:joml:1.10.5'
+    /* Structural Mixin seam assertions read the compiled target bytecode. */
+    testImplementation 'org.ow2.asm:asm:9.7.1'
+    testImplementation 'org.ow2.asm:asm-tree:9.7.1'
+
+    /*
+     * Optional Sable integration.
+     *
+     * compileOnly is intentional if Sable is genuinely optional and all
+     * references/mixins are guarded accordingly.
+     */
     compileOnly(
             "dev.ryanhcode.sable:" +
                     "sable-neoforge-${minecraft_version}:" +
@@ -148,12 +263,51 @@ dependencies {
     ) {
         transitive = false
     }
+    // Exact companion API shipped inside the Sable 2.0.5 jar-in-jar.
+    compileOnly 'dev.ryanhcode.sable-companion:sable-companion-common-1.21.1:1.6.0'
+    if (providers.gradleProperty('sableChecks').map { it.toBoolean() }.getOrElse(false)) {
+        runtimeOnly("dev.ryanhcode.sable:sable-neoforge-${minecraft_version}:${sable_version}") {
+            transitive = false
+        }
+    }
 
 //    compileOnly "curse.maven:sable-1312371:8673825"
 //    implementation "curse.maven:create-328085:7963363"
 //    implementation "curse.maven:create-aeronautics-676721:8763471"
 }
 
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+/*
+ * The development mod model and the distributable JAR are separate concerns.
+ *
+ * ModDevGradle's sourceSet declarations make common available to development
+ * runs, while this explicitly embeds common bytecode in the final GravityEngine
+ * artifact.
+ *
+ * Only classes are copied here because publish.gradle already contributes:
+ *
+ *   :common/src/main/resources
+ *
+ * to this target's main resources.
+ */
+tasks.named('jar', Jar).configure {
+    dependsOn project(':common').tasks.named('classes')
+
+    from(
+            project(':common')
+                    .sourceSets
+                    .main
+                    .output
+                    .classesDirs
+    )
+}
+
+/*
+ * Resource metadata expansion.
+ */
 tasks.named(
         'processResources',
         ProcessResources
@@ -207,8 +361,218 @@ tasks.register('baselineSnapshot') {
     dependsOn tasks.named('jar')
 }
 
+/* No game/server launch: assertion failures propagate as a non-zero Java exit. */
+tasks.register('controlCheck', JavaExec) {
+    group = 'verification'
+    description = 'Executes the JVM API, geometry operand and movement-scope control checks.'
+    dependsOn tasks.named('controlTestClasses')
+    classpath = sourceSets.controlTest.runtimeClasspath
+    mainClass = 'cc.sighs.gravityengine.controltest.JvmControlChecks'
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    enableAssertions = true
+}
+
+/*
+ * Executes the behavioural control mod in an isolated dedicated server.
+ *
+ * Compilation alone is not a behavioural gate. The control mod prints a
+ * terminal result and writes control-boundary-result.txt before halting the
+ * server; this task fails if that executable result is absent or not PASS.
+ */
+def prepareControlBoundaryVerification =
+        tasks.register('prepareControlBoundaryVerification') {
+            group = 'verification'
+            description =
+                    'Removes the previous control-boundary result before execution.'
+
+            doLast {
+                delete controlRunDirectory.file('control-boundary-result.txt')
+            }
+        }
+
+tasks.named('runServer').configure {
+    /*
+     * The stale result must be removed before the dedicated server writes a new
+     * one. dependsOn is intentionally not used for this pair: runServer is the
+     * canonical ordering anchor and preparation is the producer that must
+     * precede it.
+     */
+    mustRunAfter prepareControlBoundaryVerification
+}
+
+tasks.register('controlBoundaryVerification') {
+    group = 'verification'
+    description =
+            'Runs the GravityEngine behavioural control checks in a dedicated server.'
+
+    def runServerProvider = tasks.named('runServer')
+    dependsOn runServerProvider
+    dependsOn prepareControlBoundaryVerification
+
+    /*
+     * The behavioural gate must never consume a stale PASS file. Gradle does
+     * not order sibling dependencies, so the ordering relationship is asserted
+     * here instead of relying on declaration order.
+     */
+    doFirst {
+        def runServerTask = runServerProvider.get()
+        def orderedBefore = runServerTask
+                .mustRunAfter
+                .getDependencies(runServerTask)
+                .contains(prepareControlBoundaryVerification.get())
+        if (!orderedBefore) {
+            throw new GradleException(
+                    'runServer mustRunAfter prepareControlBoundaryVerification '
+                            + 'so the behavioural gate cannot read a stale '
+                            + 'control-boundary result'
+            )
+        }
+    }
+
+    doLast {
+        def result = controlRunDirectory.file('control-boundary-result.txt').asFile
+
+        if (!result.isFile()) {
+            throw new GradleException(
+                    'control checks did not produce ' + result
+            )
+        }
+
+        String text = result.getText('UTF-8').trim()
+        if (!text.startsWith('PASS')) {
+            throw new GradleException(
+                    'control checks failed: ' + text
+            )
+        }
+    }
+}
+
+/*
+ * Canonical Dynamics Core verification:
+ *
+ *   common unit/architecture tests
+ *   target compilation + JUnit tests
+ *   executable behavioural control checks
+ *
+ * Ordinary "build" includes JVM controls; only this aggregate launches the server.
+ */
+tasks.register('dynamicsCoreVerification') {
+    group = 'verification'
+    description = 'Executes common, target, JVM and server Dynamics Core checks.'
+    dependsOn project(':common').tasks.named('test')
+    dependsOn tasks.named('test')
+    dependsOn tasks.named('controlCheck')
+    dependsOn tasks.named('verifyApiConsumerImports')
+    dependsOn tasks.named('controlBoundaryVerification')
+}
+
+/* Focused contact/mode gate. The full dynamics gate still includes the separate
+ * death/dimension and persistence suites and is never weakened by this task. */
+tasks.register('contactCompatibilityVerification') {
+    group = 'verification'
+    description = 'Runs common, target, JVM and transformed contact/mode server checks.'
+    dependsOn project(':common').tasks.named('test')
+    dependsOn tasks.named('test')
+    dependsOn tasks.named('controlCheck')
+    dependsOn tasks.named('verifyApiConsumerImports')
+    dependsOn tasks.named('controlBoundaryVerification')
+}
+
+def sableRunDirectory = layout.projectDirectory.dir('run/sable-verification')
+def prepareSableVerification = tasks.register('prepareSableCompatibilityVerification') {
+    doLast {
+        delete sableRunDirectory.file('control-boundary-result.txt')
+        delete sableRunDirectory.file('sable-checks-result.txt')
+    }
+}
+tasks.named('runSableVerification') {
+    dependsOn prepareSableVerification
+}
+tasks.register('sableCompatibilityVerification') {
+    group = 'verification'
+    description = 'Strict pinned-Sable server gate; missing or skipped coverage fails.'
+    dependsOn project(':common').tasks.named('test'), tasks.named('test'), tasks.named('controlCheck')
+    dependsOn tasks.named('verifyApiConsumerImports'), tasks.named('runSableVerification')
+    doLast {
+        def result = sableRunDirectory.file('control-boundary-result.txt').asFile
+        def coverage = sableRunDirectory.file('sable-checks-result.txt').asFile
+        def required = ['contacts', 'landing-commit', 'context', 'continuity', 'modes', 'transport', 'gravity', 'physics', 'passive-entities']
+        if (!result.isFile() || !result.getText('UTF-8').startsWith('PASS contact compatibility')) {
+            throw new GradleException('Strict Sable controls failed: ' + (result.isFile() ? result.getText('UTF-8') : 'missing fresh result'))
+        }
+        def lines = coverage.isFile() ? coverage.readLines('UTF-8') : []
+        if (!lines.contains("PASS Sable ${sable_version}".toString()) || !required.every { lines.contains(it) }) {
+            throw new GradleException('Strict Sable coverage missing/skipped: ' + lines)
+        }
+    }
+}
+
+/*
+ * Supported-API boundary guard.
+ *
+ * The consumer fixtures under src/controlTest/java/com/example are the
+ * compile-level proof that an external content mod needs only
+ * cc.sighs.gravityengine.api. This task fails the build if any GravityEngine
+ * import in those fixtures reaches outside that namespace.
+ */
+tasks.register('verifyApiConsumerImports') {
+    group = 'verification'
+
+    description =
+            'Verify external consumer fixtures import only the supported GravityEngine API.'
+
+    def fixtures = fileTree('src/controlTest/java/com/example') {
+        include '**/*.java'
+    }
+
+    inputs.files(fixtures)
+
+    doLast {
+        def violations = []
+
+        fixtures.each { File fixture ->
+            fixture.readLines().eachWithIndex { String line, int index ->
+                String trimmed = line.trim()
+
+                if (trimmed.startsWith('import cc.sighs.gravityengine.')
+                        && !trimmed.startsWith(
+                        'import cc.sighs.gravityengine.api.'
+                )) {
+                    violations.add(
+                            "${fixture.path}:${index + 1}: ${trimmed}"
+                    )
+                }
+            }
+        }
+
+        if (!violations.isEmpty()) {
+            throw new GradleException(
+                    'Consumer fixture imports a non-API GravityEngine package:\n'
+                            + violations.join('\n')
+            )
+        }
+    }
+}
+
+tasks.named('check').configure {
+    dependsOn tasks.named('verifyApiConsumerImports')
+    dependsOn tasks.named('controlCheck')
+}
+
+tasks.named('controlTestClasses').configure {
+    dependsOn tasks.named('verifyApiConsumerImports')
+}
+
 /*
  * Publishing remains a shared target convention.
+ *
+ * Among other things this contributes:
+ *
+ *   :common/src/main/resources
+ *
+ * to the target's main resource set.
  */
 apply from: file(
         '../../gradle/target-conventions/publish.gradle'

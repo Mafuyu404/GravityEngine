@@ -1,9 +1,12 @@
 package cc.sighs.gravityengine.gravity.integration.compat.sable;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
+import cc.sighs.gravityengine.math.Quatd;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
@@ -22,9 +25,6 @@ import org.joml.Vector3d;
  * supplies only the character representation required by that solver.</p>
  */
 public final class SablePlayerCollisionCompatibility {
-    private static final Vector3d CANONICAL_UP =
-            new Vector3d(0.0D, 1.0D, 0.0D);
-
     private SablePlayerCollisionCompatibility() {
     }
 
@@ -63,31 +63,16 @@ public final class SablePlayerCollisionCompatibility {
         GravityFrame frame =
                 requireCollisionFrame(entity);
 
-        Vec3 up = frame.up();
-
-        Vector3d worldUp =
-                new Vector3d(
-                        up.x,
-                        up.y,
-                        up.z
-                );
-
-        if (!worldUp.isFinite()
-                || !(worldUp.lengthSquared() > 1.0E-24D)) {
+        Vec3d up = frame.up();
+        if (!up.isFinite()
+                || !(up.lengthSquared() > 1.0E-24D)) {
             throw new IllegalStateException(
                     "invalid GravityEngine collision up for Sable: "
                             + up
             );
         }
 
-        worldUp.normalize();
-
-        return new Quaterniond()
-                .rotationTo(
-                        new Vector3d(CANONICAL_UP),
-                        worldUp
-                )
-                .normalize();
+        return joml(Quatd.rotationTo(Vec3d.Y, up.normalized()));
     }
 
     /**
@@ -106,7 +91,7 @@ public final class SablePlayerCollisionCompatibility {
         double height = dimensions.height();
         requireDimensions(width, height);
 
-        Vec3 center = GravityEntityGeometry.bodyCenter(entity, frame);
+        Vec3 center = GravityEntityGeometry.bodyCenter(entity);
         double radius = Math.hypot(height * 0.5D, width / Math.sqrt(2.0D))
                 + 1.0E-7D;
         AABB allOrientations = new AABB(
@@ -145,10 +130,7 @@ public final class SablePlayerCollisionCompatibility {
         );
 
         Vec3 center =
-                GravityEntityGeometry.bodyCenter(
-                        entity,
-                        frame
-                );
+                GravityEntityGeometry.bodyCenter(entity);
 
         double halfWidth = width * 0.5D;
         double halfHeight = height * 0.5D;
@@ -194,24 +176,14 @@ public final class SablePlayerCollisionCompatibility {
         GravityFrame frame =
                 requireCollisionFrame(entity);
 
-        Vec3 feet =
-                GravityEntityGeometry.gravityFeet(
-                        entity,
-                        frame
-                );
-
+        Vec3d feet = MinecraftMathAdapter.toVec3d(
+                GravityEntityGeometry.gravityFeet(entity, frame)
+        );
         if (distanceDown != 0.0F) {
-            feet = feet.add(
-                    frame.down()
-                            .scale(distanceDown)
-            );
+            feet = feet.add(frame.down().multiply(distanceDown));
         }
 
-        return new Vector3d(
-                feet.x,
-                feet.y,
-                feet.z
-        );
+        return joml(feet);
     }
 
     /**
@@ -251,11 +223,11 @@ public final class SablePlayerCollisionCompatibility {
                 height
         );
 
-        Vec3 center =
-                gravityFeet.add(
-                        frame.up()
-                                .scale(height * 0.5D)
-                );
+        Vec3 center = MinecraftMathAdapter.toMinecraft(
+                MinecraftMathAdapter.toVec3d(gravityFeet).add(
+                        frame.up().multiply(height * 0.5D)
+                )
+        );
 
         return GravityEntityGeometry
                 .positionAnchorFromBodyCenter(
@@ -284,7 +256,7 @@ public final class SablePlayerCollisionCompatibility {
     ) {
         var runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         /*
          * Sable's collision is normally called from inside the already
@@ -320,5 +292,22 @@ public final class SablePlayerCollisionCompatibility {
         return Double.isFinite(value.x)
                 && Double.isFinite(value.y)
                 && Double.isFinite(value.z);
+    }
+
+    private static Quaterniond joml(Quatd value) {
+        return new Quaterniond(
+                value.x(),
+                value.y(),
+                value.z(),
+                value.w()
+        );
+    }
+
+    private static Vector3d joml(Vec3d value) {
+        return new Vector3d(
+                value.x(),
+                value.y(),
+                value.z()
+        );
     }
 }

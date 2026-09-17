@@ -1,11 +1,21 @@
 package cc.sighs.gravityengine.gravity.integration.collision;
 
+import cc.sighs.gravityengine.gravity.collision.RigidOccupancyCapture;
+
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.collision.*;
+import cc.sighs.gravityengine.gravity.collision.provider.ExternalRigidCollisionQuery;
+import cc.sighs.gravityengine.gravity.collision.provider.RigidCollisionPublicationRegistry;
+import cc.sighs.gravityengine.gravity.collision.RigidPublicationCollector;
+import cc.sighs.gravityengine.gravity.integration.MinecraftRigidCollisionPublicationResolver;
 import cc.sighs.gravityengine.gravity.kinematic.KinematicStepContext;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody;
-import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
+import cc.sighs.gravityengine.gravity.collision.BlockObstacle;
+import cc.sighs.gravityengine.gravity.collision.CollisionWorkTracker;
+import cc.sighs.gravityengine.gravity.collision.DynamicCollisionObstacleSnapshot;
+import cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import cc.sighs.gravityengine.math.geometry.Aabb3d;
 import net.minecraft.core.BlockPos;
@@ -61,7 +71,7 @@ public final class MinecraftCollisionSceneCapture {
 
         CollisionObstacleRegistry.RegisteredSphereQuery spheres =
                 CollisionObstacleRegistry.get(level).query(
-                        MinecraftGeometryAdapter.toMinecraft(
+                        MinecraftCollisionGeometryAdapter.toMinecraft(
                                 domain.staticBounds()));
         tracker.recordSourceSphereSnapshot();
         List<SphereObstacle> sphereObstacles =
@@ -70,7 +80,7 @@ public final class MinecraftCollisionSceneCapture {
                 new HashSet<>(spheres.registeredBlockPositions());
 
         List<BlockObstacle> blockObstacles = new ArrayList<>();
-        Map<BlockPos, BlockMovementMaterialSnapshot> movementMaterials =
+        Map<CellPos, BlockMovementMaterialSnapshot> movementMaterials =
                 new HashMap<>();
         int evaluatedBlockPositions = captureBlocks(
                 level,
@@ -83,14 +93,43 @@ public final class MinecraftCollisionSceneCapture {
                 collisionOwner
         );
 
-        List<DynamicCollisionObstacleSnapshot> dynamicObstacles =
-                captureDynamicObstacles(
-                        level,
-                        collisionOwner,
-                        domain.dynamicEntityBounds(),
-                        time,
-                        tracker
+        /*
+         * One dynamic-obstacle builder owns both entity publications and
+         * external rigid providers for this operation. External providers are
+         * consulted before the scene is frozen, so the solver observes one
+         * immutable obstacle set rather than re-reading an optional mod later.
+         */
+        BudgetedRigidCollector dynamicBuilder =
+                new BudgetedRigidCollector(
+                        new CollisionSceneBuilder(time),
+                        tracker,
+                        true
                 );
+
+        try (var subject = MinecraftCollisionSubject.open(collisionOwner)) {
+            RigidCollisionPublicationRegistry.capture(
+                    level,
+                    new ExternalRigidCollisionQuery(
+                            domain.staticBounds(),
+                            domain.dynamicEntityBounds(),
+                            time
+                    ),
+                    dynamicBuilder
+            );
+        }
+
+        captureDynamicObstacles(
+                level,
+                collisionOwner,
+                domain.dynamicEntityBounds(),
+                time,
+                tracker,
+                dynamicBuilder
+        );
+
+        List<DynamicCollisionObstacleSnapshot> dynamicObstacles =
+                dynamicBuilder.build();
+
         /*
          * Pose-fit legality (Player.canPlayerFitWithinBlocksAndEntitiesWhen)
          * treats ordinary entities as strict blockers, unlike the
@@ -151,6 +190,197 @@ public final class MinecraftCollisionSceneCapture {
                 tracker);
     }
 
+    /**
+     * Captures only the dynamic rigid geometry relevant to one packet
+     * occupancy validation.
+     *
+     * <p>This deliberately does not materialize block voxels, world-border
+     * planes, registered static spheres or pose-strict gameplay entities.
+     * Vanilla packet validation already performs its own block/entity
+     * collision checks; GravityEngine extends only the geometry it owns:
+     * external rigid providers and native moving rigid publications.</p>
+     */
+    public static List<DynamicCollisionObstacleSnapshot>
+    captureRigidOccupancy(
+            Entity collisionOwner,
+            Aabb3d queryBounds,
+            KinematicStepContext time,
+            CollisionWorkTracker tracker
+    ) {
+        return captureRigidOccupancyBounded(
+                collisionOwner,
+                queryBounds,
+                time,
+                tracker
+        ).obstacles();
+    }
+
+    /**
+     * Budget-bounded form of {@link #captureRigidOccupancy}.
+     *
+     * <p>Every external-provider publication and native dynamic primitive is
+     * charged against {@code tracker.recordObstacles} before it is accepted
+     * into the collector. A provider that would exceed the packet obstacle
+     * bound aborts its own accumulation with
+     * {@link CollisionComplexityLimitException}; the caller observes
+     * {@link RigidOccupancyCapture#budgetExhausted()} and fails closed instead
+     * of performing unbounded work.</p>
+     */
+    public static RigidOccupancyCapture captureRigidOccupancyBounded(
+            Entity collisionOwner,
+            Aabb3d queryBounds,
+            KinematicStepContext time,
+            CollisionWorkTracker tracker
+    ) {
+        Objects.requireNonNull(
+                collisionOwner,
+                "collisionOwner"
+        );
+        Objects.requireNonNull(queryBounds, "queryBounds");
+        Objects.requireNonNull(time, "time");
+        Objects.requireNonNull(tracker, "tracker");
+
+        Level level = Objects.requireNonNull(
+                collisionOwner.level(),
+                "collisionOwner level"
+        );
+        Aabb3d dynamicBounds =
+                DynamicEntityBroadphasePolicy
+                        .candidateQueryBounds(queryBounds);
+        BudgetedRigidCollector collector =
+                new BudgetedRigidCollector(
+                        new CollisionSceneBuilder(time),
+                        tracker
+                );
+
+        try {
+            try (var subject = MinecraftCollisionSubject.open(collisionOwner)) {
+                RigidCollisionPublicationRegistry.capture(level,
+                        new ExternalRigidCollisionQuery(queryBounds, dynamicBounds, time), collector);
+            }
+            capturePacketDynamicObstacles(
+                    level, collisionOwner, dynamicBounds, time, tracker, collector
+            );
+            return new RigidOccupancyCapture(
+                    collector.build(),
+                    tracker.limitExceeded(),
+                    tracker
+            );
+        } catch (CollisionComplexityLimitException | CollisionSceneCoverageException exhausted) {
+            cc.sighs.gravityengine.gravity.debug.CollisionCoverageDiagnostics.report(collisionOwner, exhausted);
+            /*
+             * A pathological provider is an explicit indeterminate capture,
+             * not an operation failure: the packet validator fails closed
+             * without an uncaught complexity exception escaping
+             * handleMovePlayer.
+             */
+            return new RigidOccupancyCapture(
+                    List.of(),
+                    true,
+                    tracker
+            );
+        }
+    }
+
+    /**
+     * Collector that refuses to accumulate more rigid primitives than the
+     * operation's obstacle budget allows.
+     */
+    private static final class BudgetedRigidCollector
+            implements RigidPublicationCollector {
+
+        private final CollisionSceneBuilder builder;
+        private final CollisionWorkTracker tracker;
+        private final boolean movementCapture;
+
+        private BudgetedRigidCollector(
+                CollisionSceneBuilder builder,
+                CollisionWorkTracker tracker
+        ) {
+            this(builder, tracker, false);
+        }
+
+        private BudgetedRigidCollector(
+                CollisionSceneBuilder builder,
+                CollisionWorkTracker tracker,
+                boolean movementCapture
+        ) {
+            this.builder = builder;
+            this.tracker = tracker;
+            this.movementCapture = movementCapture;
+        }
+
+        private void reserve(int count) {
+            boolean accepted = movementCapture
+                    ? tracker.recordCapturedEntityPrimitives(count)
+                    : tracker.recordObstacles(count);
+
+            if (!accepted) {
+                throw new CollisionComplexityLimitException(
+                        "rigid capture budget exceeded: "
+                                + tracker.limitReason()
+                );
+            }
+        }
+
+        @Override
+        public void addObstacle(
+                DynamicCollisionObstacleSnapshot obstacle
+        ) {
+            reserve(1);
+            builder.addObstacle(obstacle);
+        }
+
+        private void addNativePublication(
+                Level level,
+                CollisionSurfaceMotionProvider.MotionSnapshot publication,
+                Aabb3d discovery,
+                KinematicStepContext time,
+                MinecraftRigidCollisionPublicationResolver resolver
+        ) {
+            // Reserve before traversing and validating the publication.
+            reserve(publication.primitives().size());
+
+            DynamicEntityBroadphasePolicy.validatePublication(
+                    publication,
+                    discovery,
+                    time
+            );
+
+            for (var primitive : publication.primitives()) {
+                // Already reserved; do not call addObstacle() again.
+                builder.addObstacle(primitive);
+
+                RigidCollisionPublicationRegistry.recordPublication(
+                        level,
+                        primitive,
+                        resolver
+                );
+            }
+        }
+
+        private List<DynamicCollisionObstacleSnapshot> build() {
+            return builder.build().dynamicObstacles();
+        }
+    }
+
+    /**
+     * Creates the packet path's bounded rigid collector.
+     *
+     * <p>Exposed for the executable packet-budget verification, which drives a
+     * pathological provider through the exact bounded sink used by the packet
+     * capture path without needing a live Minecraft level.</p>
+     */
+    public static RigidPublicationCollector boundedRigidCollector(
+            KinematicStepContext time,
+            CollisionWorkTracker tracker
+    ) {
+        return new BudgetedRigidCollector(
+                new CollisionSceneBuilder(time),
+                tracker
+        );
+    }
+
     private static int captureBlocks(
             Level level,
             CollisionContext context,
@@ -158,7 +388,7 @@ public final class MinecraftCollisionSceneCapture {
             CollisionWorkTracker tracker,
             List<BlockObstacle> blockObstacles,
             Set<BlockPos> replacedBlockPositions,
-            Map<BlockPos, BlockMovementMaterialSnapshot> movementMaterials,
+            Map<CellPos, BlockMovementMaterialSnapshot> movementMaterials,
             Entity collisionOwner
     ) {
         BlockPos minimum = BlockPos.containing(
@@ -223,7 +453,9 @@ public final class MinecraftCollisionSceneCapture {
                             // snapshot and never re-queries the live
                             // BlockState/Block.
                             movementMaterials.put(
-                                    position,
+                                    MinecraftMathAdapter.toCellPos(
+                                            position
+                                    ),
                                     new BlockMovementMaterialSnapshot(
                                             state.getFriction(
                                                     level,
@@ -258,36 +490,65 @@ public final class MinecraftCollisionSceneCapture {
         return evaluated;
     }
 
-    private static List<DynamicCollisionObstacleSnapshot>
-    captureDynamicObstacles(
+    /** Packet-only capture: bounded candidates, then budget-reserved publications. */
+    private static void capturePacketDynamicObstacles(
             Level level,
             Entity collisionOwner,
             Aabb3d queryBounds,
             KinematicStepContext time,
-            CollisionWorkTracker tracker
+            CollisionWorkTracker tracker,
+            BudgetedRigidCollector collector
     ) {
-        var predicate = EntitySelector.NO_SPECTATORS.and(
-                collisionOwner::canCollideWith);
+        var predicate = EntitySelector.NO_SPECTATORS.and(collisionOwner::canCollideWith);
         List<Entity> candidates = level.getEntities(
                 collisionOwner,
-                MinecraftGeometryAdapter.toMinecraft(queryBounds),
-                predicate.and(candidate ->
-                        isHardObstacle(candidate))
+                MinecraftCollisionGeometryAdapter.toMinecraft(queryBounds),
+                candidate -> {
+                    // Charge even rejected soft entities: filtering must not hide
+                    // an arbitrarily large visited candidate set.
+                    if (!tracker.recordRigidCandidate()) {
+                        throw new CollisionComplexityLimitException(
+                                "packet native candidate budget exceeded: " + tracker.limitReason());
+                    }
+                    return !candidate.isRemoved()
+                            && predicate.test(candidate)
+                            && isHardObstacle(candidate);
+                }
         );
-        List<DynamicCollisionObstacleSnapshot> captured = new ArrayList<>();
         Set<Integer> seen = new HashSet<>();
         for (Entity other : candidates) {
             if (other == collisionOwner || other.isRemoved() || !seen.add(other.getId())) continue;
-            // Exactly one completed handoff read. No provider reaches the returned scene.
-            var publication = ((CollisionSurfaceMotionProvider) other)
-                    .gravityengine$collisionSurfaceMotionSnapshot();
-            if (publication == null) throw new CollisionSceneCoverageException("missing rigid publication");
-            Aabb3d discovery = MinecraftGeometryAdapter.toAabb3d(other.getBoundingBox());
-            DynamicEntityBroadphasePolicy.validatePublication(publication, discovery, time);
-            captured.addAll(publication.primitives());
+            var provider = (CollisionSurfaceMotionProvider) other;
+            var publication = provider.gravityengine$collisionSurfaceMotionSnapshot();
+            if (publication == null) {
+                throw new CollisionSceneCoverageException("missing rigid publication");
+            }
+            collector.addNativePublication(
+                    level, publication,
+                    MinecraftCollisionGeometryAdapter.toAabb3d(other.getBoundingBox()),
+                    time, new MinecraftRigidCollisionPublicationResolver(other));
             tracker.recordDynamicSurfaceSnapshot();
         }
-        return captured;
+    }
+
+    private static void captureDynamicObstacles(
+            Level level,
+            Entity collisionOwner,
+            Aabb3d queryBounds,
+            KinematicStepContext time,
+            CollisionWorkTracker tracker,
+            BudgetedRigidCollector collector
+    ) {
+        // Reuse predicate-time candidate accounting and whole-list reservation.
+        // The collector selects the movement capture counter.
+        capturePacketDynamicObstacles(
+                level,
+                collisionOwner,
+                queryBounds,
+                time,
+                tracker,
+                collector
+        );
     }
 
     /**
@@ -305,37 +566,64 @@ public final class MinecraftCollisionSceneCapture {
         Objects.requireNonNull(collisionOwner, "collisionOwner");
         Objects.requireNonNull(queryBounds, "queryBounds");
         Objects.requireNonNull(tracker, "tracker");
-        var predicate = EntitySelector.NO_SPECTATORS.and(
-                collisionOwner::canCollideWith).and(candidate ->
-                !isHardObstacle(candidate));
+
+        var predicate = EntitySelector.NO_SPECTATORS
+                .and(collisionOwner::canCollideWith)
+                .and(candidate -> !isHardObstacle(candidate));
+
         List<Entity> candidates = level.getEntities(
                 collisionOwner,
-                MinecraftGeometryAdapter.toMinecraft(queryBounds),
-                predicate
+                MinecraftCollisionGeometryAdapter.toMinecraft(queryBounds),
+                candidate -> {
+                    // Charge before filtering, including rejected candidates.
+                    if (!tracker.recordRigidCandidate()) {
+                        throw new CollisionComplexityLimitException(
+                                "pose candidate budget exceeded: "
+                                        + tracker.limitReason()
+                        );
+                    }
+                    return !candidate.isRemoved()
+                            && predicate.test(candidate);
+                }
         );
+
         List<EntityObstacle> captured = new ArrayList<>();
+
         for (Entity other : candidates) {
             if (other == collisionOwner || other.isRemoved()) {
                 continue;
             }
-            Aabb3d bounds = MinecraftGeometryAdapter.toAabb3d(
-                    other.getBoundingBox());
+
+            // Reserve before constructing geometry or storing the snapshot.
+            if (!tracker.recordCapturedEntityPrimitives(1)) {
+                throw new CollisionComplexityLimitException(
+                        "pose capture budget exceeded: "
+                                + tracker.limitReason()
+                );
+            }
+
+            Aabb3d bounds =
+                    MinecraftCollisionGeometryAdapter.toAabb3d(
+                            other.getBoundingBox()
+                    );
+
             CollisionBody exactBody = null;
             if (GravityInfluencePolicy.usesCustomBody(other)) {
-                GravityFrame otherFrame =
-                        GravityFrameAccess.authoritativeFrame(other);
-                exactBody = GravityEntityGeometry.exactBody(
-                        other, otherFrame);
+                exactBody = GravityEntityGeometry.exactBody(other);
             }
+
             tracker.recordDynamicSurfaceSnapshot();
+
             captured.add(new EntityObstacle(
                     other.getId(),
                     bounds,
                     exactBody
             ));
         }
+
         return captured;
     }
+
     /**
      * Captures the level's current finite border planes exactly once.
      *
