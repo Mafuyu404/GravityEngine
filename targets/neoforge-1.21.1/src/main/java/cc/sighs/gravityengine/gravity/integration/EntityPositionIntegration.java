@@ -1,21 +1,15 @@
 package cc.sighs.gravityengine.gravity.integration;
 
-import cc.sighs.gravityengine.gravity.collision.*;
-import cc.sighs.gravityengine.gravity.GravityFrame;
-import cc.sighs.gravityengine.gravity.GravityState;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
-import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
-import cc.sighs.gravityengine.gravity.model.*;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import cc.sighs.gravityengine.gravity.runtime.RestingContactSnapshot;
-import cc.sighs.gravityengine.gravity.runtime.VanillaCollisionState;
-import java.util.Objects;
-import java.util.Optional;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
+import java.util.Objects;
 
 /**
  * Position discontinuity and exact-body geometry repair integration.
@@ -23,7 +17,7 @@ import net.minecraft.world.phys.Vec3;
  * <p>Owns the classification of externally imposed position writes, the
  * discontinuity handling they require and the geometry repairs that follow a
  * Vanilla position or dimension write. None of these seams sample gravity;
- * they consume the already authoritative environmental frame.</p>
+ * they consume the installed collision axis.</p>
  */
 public final class EntityPositionIntegration {
     private EntityPositionIntegration() {}
@@ -43,7 +37,7 @@ public final class EntityPositionIntegration {
      *
      * <p>Movement continuity is invalidated exactly once, then the exact
      * gravity-oriented body is rebuilt exactly once at the new positionAnchor using the
-     * existing authoritative environmental frame.  No {@code GravityMoveResult}
+     * installed collision axis.  No {@code GravityMoveResult}
      * is fabricated, no collision solve runs, and no new environmental
      * gravity evidence is sampled here: the next outer movement scope
      * owns environmental resampling.  This is deliberately separate from the
@@ -52,7 +46,7 @@ public final class EntityPositionIntegration {
      * discontinuity, and never routes here.</p>
      *
      * <p>Calling this inside an active movement/geometry owner is a caller
-     * bug; {@link #invalidateMovementContinuity(Entity)} rejects it rather
+     * bug; {@link EntityMovementIntegration#invalidateMovementContinuity(Entity)} rejects it rather
      * than silently superseding the live transaction.</p>
      */
     public static void commitPositionDiscontinuity(
@@ -94,17 +88,10 @@ public final class EntityPositionIntegration {
         if (!GravityInfluencePolicy.usesCustomBody(entity)) {
             return;
         }
-        /*
-         * Geometry repair is not a gravity-sampling operation.  The
-         * installed/completed authoritative frame stays valid as geometry and
-         * reference continuity across the position write; the next outer
-         * operation performs the next legitimate environmental evidence
-         * resolution.  Never synthesize a replacement frame from the
-         * synchronized applied GravityState while an authoritative frame
-         * exists.
-         */
-        GravityFrame frame = GravityFrameAccess.authoritativeFrame(entity);
-        GravityEntityGeometry.installFromPositionAnchor(entity, frame, positionAnchor);
+        if (!entity.position().equals(positionAnchor)) {
+            throw new IllegalStateException("position repair must consume the committed native anchor");
+        }
+        GravityEntityGeometry.reanchorAfterVanillaTranslation(entity);
     }
 
     /**
@@ -138,23 +125,24 @@ public final class EntityPositionIntegration {
                 "afterPositionAnchor"
         );
 
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         if (runtime.consumeExternalSupportTransportPositionWrite(
-                beforePositionAnchor,
-                afterPositionAnchor
+                MinecraftMathAdapter.toVec3d(
+                        beforePositionAnchor
+                ),
+                MinecraftMathAdapter.toVec3d(
+                        afterPositionAnchor
+                )
         )) {
             /*
              * Explicit support transport is an owned accepted translation,
              * not an external discontinuity.
              */
             if (GravityInfluencePolicy.usesCustomBody(entity)) {
-                GravityEntityGeometry.reanchorAfterVanillaTranslation(
-                        entity,
-                        runtime.activeFrame()
-                );
+                GravityEntityGeometry.reanchorAfterVanillaTranslation(entity);
             }
             return;
         }
@@ -177,13 +165,12 @@ public final class EntityPositionIntegration {
                     afterPositionAnchor
             )) {
                 runtime.supersedeMovement(
-                        afterPositionAnchor
+                        MinecraftMathAdapter.toVec3d(
+                                afterPositionAnchor
+                        )
                 );
             } else if (runtime.discontinuityDestination() == null) {
-                GravityEntityGeometry.reanchorAfterVanillaTranslation(
-                        entity,
-                        runtime.activeFrame()
-                );
+                GravityEntityGeometry.reanchorAfterVanillaTranslation(entity);
             }
             return;
         }
@@ -256,9 +243,9 @@ public final class EntityPositionIntegration {
             return;
         }
 
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         if (runtime.isApplyingGeometry()) {
             return;
@@ -266,7 +253,9 @@ public final class EntityPositionIntegration {
 
         if (runtime.isInMove()) {
             runtime.supersedeMovement(
-                    afterPositionAnchor
+                    MinecraftMathAdapter.toVec3d(
+                            afterPositionAnchor
+                    )
             );
             return;
         }
@@ -320,9 +309,9 @@ public final class EntityPositionIntegration {
             Entity entity,
             Vec3 newPositionAnchor
     ) {
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         RestingContactSnapshot previousSupport =
                 runtime.restingContactSnapshot();
@@ -346,7 +335,7 @@ public final class EntityPositionIntegration {
      * entity after an independently owned Vanilla dimensions refresh.
      *
      * <p>The positionAnchor anchor is preserved and the exact body is rebuilt using the
-     * already-authoritative environmental frame.  This method never samples a
+     * installed collision axis.  This method never samples a
      * gravity field and never reconstructs a frame from the synchronized applied
      * {@code GravityState}; the next outer movement scope owns any
      * environmental resampling.</p>
@@ -366,13 +355,7 @@ public final class EntityPositionIntegration {
             return;
         }
 
-        GravityFrame frame =
-                GravityFrameAccess.authoritativeFrame(entity);
-
         GravityEntityGeometry.installFromPositionAnchor(
-                entity,
-                frame,
-                preservedPositionAnchor
-        );
+                entity, GravityEntityGeometry.installedUp(entity), preservedPositionAnchor);
     }
 }

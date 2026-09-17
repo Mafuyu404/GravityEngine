@@ -1,4 +1,4 @@
-name: Verify Common Changes
+name: Verify Engine Changes
 
 on:
   push:
@@ -8,10 +8,11 @@ on:
       - 'settings.gradle'
       - 'gradle.properties'
       - 'gradle/**'
-      - 'scripts/build-target.ps1'
-      - 'scripts/discover-targets.ps1'
+      - 'scripts/**'
+      - 'verification/**'
+      - 'gradlew*'
       - '.github/workflows/verify-common.yml'
-      - 'targets/**/ci.properties'
+      - 'targets/**'
   pull_request:
     paths:
       - 'common/**'
@@ -19,10 +20,11 @@ on:
       - 'settings.gradle'
       - 'gradle.properties'
       - 'gradle/**'
-      - 'scripts/build-target.ps1'
-      - 'scripts/discover-targets.ps1'
+      - 'scripts/**'
+      - 'verification/**'
+      - 'gradlew*'
       - '.github/workflows/verify-common.yml'
-      - 'targets/**/ci.properties'
+      - 'targets/**'
   workflow_dispatch:
 
 permissions:
@@ -63,7 +65,7 @@ jobs:
         run: .\gradlew.bat -p common clean test --console plain --no-daemon
 
   target-builds:
-    name: ${{ matrix.target }} (JDK ${{ matrix.java }})
+    name: ${{ matrix.target }} (JDK ${{ matrix.java }}, ${{ matrix.status }})
     needs: [discover-targets, common-tests]
     runs-on: windows-latest
     timeout-minutes: 35
@@ -86,4 +88,4 @@ jobs:
         with:
           name: ${{ matrix.target }}-jdk-${{ matrix.java }}
           path: targets/${{ matrix.target }}/build/libs/*.jar
-          if-no-files-found: ignore
+          if-no-files-found: error

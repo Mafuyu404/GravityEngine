@@ -8,6 +8,6 @@ displayName="GravityEngine control boundary checks"
 [[dependencies.gravityengine_control_tests]]
 modId="gravityengine"
 type="required"
-versionRange=""
+versionRange="[0.0.1,)"
 ordering="AFTER"
 side="BOTH"
