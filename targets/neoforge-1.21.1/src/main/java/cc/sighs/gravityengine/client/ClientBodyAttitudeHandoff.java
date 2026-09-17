@@ -1,11 +1,11 @@
 package cc.sighs.gravityengine.client;
 
 import cc.sighs.gravityengine.attitude.SemanticView;
+import cc.sighs.gravityengine.attitude.presentation.BodyAttitudeInterpolation;
 import cc.sighs.gravityengine.gravity.look.GravityLocalLook;
+import cc.sighs.gravityengine.math.Quatd;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
-import org.joml.Quaterniond;
-import org.joml.Quaternionf;
 
 import javax.annotation.Nullable;
 import java.util.Map;
@@ -291,14 +291,12 @@ public final class ClientBodyAttitudeHandoff {
                         player.yBodyRot
                 );
 
-        Quaterniond targetBody =
-                asDouble(
-                        GravityLocalLook.lookQuaternion(
-                                gravity.frame(),
-                                bodyYaw,
-                                0.0F,
-                                0.0F
-                        )
+        Quatd targetBody =
+                GravityLocalLook.lookQuaternion(
+                        gravity.frame(),
+                        bodyYaw,
+                        0.0F,
+                        0.0F
                 );
 
         float viewYaw =
@@ -307,14 +305,12 @@ public final class ClientBodyAttitudeHandoff {
         float viewPitch =
                 player.getViewXRot(partialTick);
 
-        Quaterniond targetController =
-                asDouble(
-                        GravityLocalLook.lookQuaternion(
-                                gravity.frame(),
-                                viewYaw,
-                                viewPitch,
-                                0.0F
-                        )
+        Quatd targetController =
+                GravityLocalLook.lookQuaternion(
+                        gravity.frame(),
+                        viewYaw,
+                        viewPitch,
+                        0.0F
                 );
 
         SemanticView view =
@@ -347,14 +343,14 @@ public final class ClientBodyAttitudeHandoff {
             BodyAttitudeRenderSnapshot target,
             double progress
     ) {
-        Quaterniond body =
+        Quatd body =
                 BodyAttitudeInterpolation.shortestArc(
                         source.worldFromBody(),
                         target.worldFromBody(),
                         progress
                 );
 
-        Quaterniond controller =
+        Quatd controller =
                 BodyAttitudeInterpolation.shortestArc(
                         source.cameraView()
                                 .worldFromController(),
@@ -414,17 +410,6 @@ public final class ClientBodyAttitudeHandoff {
                 );
 
         return ticks + partialTick;
-    }
-
-    private static Quaterniond asDouble(
-            Quaternionf value
-    ) {
-        return new Quaterniond(
-                value.x,
-                value.y,
-                value.z,
-                value.w
-        ).normalize();
     }
 
     private enum Target {

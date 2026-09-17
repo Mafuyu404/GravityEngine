@@ -1,29 +1,33 @@
 package cc.sighs.gravityengine.gravity.integration;
 
-import cc.sighs.gravityengine.gravity.collision.*;
+import cc.sighs.gravityengine.gravity.collision.CollisionCaptureDomain;
+import cc.sighs.gravityengine.gravity.collision.CollisionSceneCoverageException;
+import cc.sighs.gravityengine.gravity.collision.GravityMoveResult;
+import cc.sighs.gravityengine.gravity.collision.SupportTransport;
 import cc.sighs.gravityengine.gravity.debug.GravityDebugLog;
-import cc.sighs.gravityengine.gravity.GravityFrame;
+import cc.sighs.gravityengine.gravity.geometry.PositionAuthorityPolicy;
 import cc.sighs.gravityengine.gravity.integration.collision.GravityCollisionEngine;
 import cc.sighs.gravityengine.gravity.integration.compat.sable.SableMovementCompatibility;
-import cc.sighs.gravityengine.gravity.integration.geometry.GravityGeometryTransitionService;
 import cc.sighs.gravityengine.gravity.kinematic.KinematicMoveRequest;
 import cc.sighs.gravityengine.gravity.kinematic.MovementEvidence;
 import cc.sighs.gravityengine.gravity.kinematic.OwnedMotion;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
-import cc.sighs.gravityengine.gravity.model.*;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.gravity.model.GravityCollisionRoute;
 import cc.sighs.gravityengine.gravity.model.GravityOperationType;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import cc.sighs.gravityengine.gravity.runtime.ExternalSubLevelMoveEvidence;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import cc.sighs.gravityengine.gravity.runtime.SubLevelMovementPolicy;
 import cc.sighs.gravityengine.gravity.runtime.VanillaCollisionState;
-import java.util.Objects;
-import java.util.Optional;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Vector3d;
+
+import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Vanilla {@code Entity.move} / {@code Entity.collide} movement integration.
@@ -38,17 +42,18 @@ public final class EntityMovementIntegration {
     private EntityMovementIntegration() {}
 
     /** Frozen after preparation for a physical move; independent support calls use current ownership. */
-    public static GravityInfluencePolicy.CollisionRoute movementRoute(Entity entity) {
-        var selected = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime().movementCollisionRoute();
+    public static GravityCollisionRoute movementRoute(Entity entity) {
+        var selected = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState().movementCollisionRoute();
         return selected != null ? selected : GravityInfluencePolicy.collisionRoute(entity);
     }
 
     /** Ordinary native seams run only after collide. noPhysics/piston early returns never enter here. */
     public static VanillaCollisionState movementCollisionState(Entity entity) {
-        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
-        if (runtime.discontinuityDestination() != null) return null;
-        if (movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA) return null;
-        var state = runtime.movementCollisionState();
+        var component = GravityEntityAccess.cast(entity).gravityengine$gravityComponent();
+        var operationState = component.operationState();
+        if (operationState.discontinuityDestination() != null) return null;
+        if (movementRoute(entity) == GravityCollisionRoute.VANILLA) return null;
+        var state = component.moveInterop().currentCollisionState();
         if (state == null) throw new IllegalStateException("ordinary custom Entity.move seam requires its collision result");
         return state;
     }
@@ -68,17 +73,18 @@ public final class EntityMovementIntegration {
      * custom support without requiring a fictitious collision solve.
      */
     public static VanillaCollisionState supportingCollisionState(Entity entity) {
-        if (movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA) return null;
-        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
-        var state = runtime.movementCollisionState();
-        return state != null ? state : new VanillaCollisionState(false, false, false, false, false, Optional.empty());
+        if (movementRoute(entity) == GravityCollisionRoute.VANILLA) return null;
+        return GravityEntityAccess.cast(entity)
+                .gravityengine$gravityComponent()
+                .moveInterop()
+                .currentCollisionStateOrEmpty();
     }
 
     /** A fall callback has different landing semantics from gameplay ground continuity. */
     public record FallMovement(double vertical, boolean landed) {}
 
     public static FallMovement fallMovement(Entity entity, double vanillaVertical, boolean vanillaGrounded) {
-        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
+        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
         return switch (movementRoute(entity)) {
             case VANILLA -> new FallMovement(vanillaVertical, vanillaGrounded);
             case EXACT_BODY -> {
@@ -103,16 +109,17 @@ public final class EntityMovementIntegration {
     }
 
     public static Vec3 collide(Entity entity, Vec3 movement) {
-        var runtime =
+        var component =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent();
+        var runtime = component.operationState();
 
-        GravityInfluencePolicy.CollisionRoute route =
+        GravityCollisionRoute route =
                 movementRoute(entity);
 
         ExternalSubLevelMoveEvidence external = null;
 
-        if (route != GravityInfluencePolicy.CollisionRoute.VANILLA) {
+        if (route != GravityCollisionRoute.VANILLA) {
             /*
              * The first Sable -> parent-world collide belongs to the ordinary
              * Entity.move transaction.
@@ -123,7 +130,7 @@ public final class EntityMovementIntegration {
              * equality -- distinguishes the two operations.
              */
             boolean parentSubLevelSolveAlreadyCaptured =
-                    runtime.externalSubLevelMoveEvidence() != null;
+                    component.moveInterop().subLevelMoveEvidence() != null;
 
             if (parentSubLevelSolveAlreadyCaptured
                     && SableMovementCompatibility
@@ -150,7 +157,7 @@ public final class EntityMovementIntegration {
                     );
 
             if (external != null) {
-                runtime.setExternalSubLevelMoveEvidence(external);
+                component.moveInterop().setSubLevelMoveEvidence(external);
 
                 Vec3 currentVelocity =
                         entity.getDeltaMovement();
@@ -160,7 +167,8 @@ public final class EntityMovementIntegration {
                                 .preserveExternalContactVelocity(
                                         currentVelocity,
                                         external,
-                                        runtime.activeFrame().up()
+                                        MinecraftMathAdapter.toMinecraft(
+                                                runtime.activeFrame().up())
                                 );
 
                 if (!preserved.equals(currentVelocity)) {
@@ -173,29 +181,42 @@ public final class EntityMovementIntegration {
                         movement,
                         external
                 );
-        Optional<Vec3> preResolved =
-                runtime.preResolvedTranslation(parentWorldInput);
+
+        /*
+         * Engine-owned persistent support transport is part of the requested
+         * trajectory, not post-solve carry. It is applied before the one
+         * authoritative collision solve and consumed at most once.
+         */
+        var input = MinecraftMathAdapter.toVec3d(parentWorldInput);
+        var body = GravityEntityGeometry.body(entity, runtime.activeFrame());
+        var preResolved = runtime.preResolvedTranslation(input, body);
         if (preResolved.isPresent()) {
-            // Entity.move still owns vanilla callbacks. This guard only
-            // prevents a resolved translation from being solved a second time
-            // if collide is re-entered for the identical input.
-            return preResolved.get();
+            return MinecraftMathAdapter.toMinecraft(preResolved.get());
         }
-        var request = runtime.reconcileActualMovement(parentWorldInput);
+
+        // Only this solve owns the consumed transport. Independent requests,
+        // including auxiliary support and packet requests, cannot replay it.
+        SupportTransport transport = runtime.currentMovementChannel()
+                == KinematicMoveRequest.Channel.SELF
+                ? runtime.consumeEngineSupportTransport().orElse(null) : null;
+        Vec3 requestedInput = transport == null ? parentWorldInput
+                : parentWorldInput.add(MinecraftMathAdapter.toMinecraft(
+                        transport.displacement()));
+        var request = transport == null
+                ? runtime.reconcileActualMovement(input)
+                : runtime.reconcileActualMovement(
+                        MinecraftMathAdapter.toVec3d(requestedInput), transport.displacement());
         Vec3 resolved;
         switch (route) {
             case VANILLA -> {
                 // The collide Mixin normally excludes Vanilla. Preserve the
                 // physical identity operation if this facade is called directly.
-                return parentWorldInput;
+                return requestedInput;
             }
             case PASSIVE_AABB -> {
-                return PassiveGravityCollisionIntegration.collide(
-                        entity,
-                        parentWorldInput
-                );
+                resolved = PassiveGravityCollisionIntegration.collide(entity, requestedInput);
             }
-            case EXACT_BODY -> resolved = GravityCollisionEngine.collide(entity, request);
+            case EXACT_BODY -> resolved = GravityCollisionEngine.collide(entity, request, transport);
             default -> throw new IllegalStateException("unknown collision route: " + route);
         }
 
@@ -204,14 +225,15 @@ public final class EntityMovementIntegration {
          * later velocity/contact response never re-solves, clips or rejects
          * this valid translation.
          */
+        runtime.setPreResolved(input, body, MinecraftMathAdapter.toVec3d(resolved));
         return resolved;
     }
 
     private static Vec3 collideExternalSupportTransport(
             Entity entity,
             Vec3 movement,
-            GravityRuntimeState runtime,
-            GravityInfluencePolicy.CollisionRoute route
+            GravityOperationState runtime,
+            GravityCollisionRoute route
     ) {
         if (!runtime.isInMove()
                 || runtime.collisionOperation() == null) {
@@ -224,9 +246,9 @@ public final class EntityMovementIntegration {
         KinematicMoveRequest request =
                 MovementEvidence.capture(
                         KinematicMoveRequest.Channel.SUPPORT_TRANSPORT,
-                        movement,
+                        MinecraftMathAdapter.toVec3d(movement),
                         OwnedMotion.ZERO
-                ).reconcile(movement);
+                ).reconcile(MinecraftMathAdapter.toVec3d(movement));
 
         Vec3 resolved;
         GravityMoveResult endpointResult = null;
@@ -245,12 +267,8 @@ public final class EntityMovementIntegration {
                                             request
                                     );
 
-                    resolved =
-                            MinecraftGeometryAdapter
-                                    .toMinecraft(
-                                            endpointResult
-                                                    .resolvedMovement()
-                                    );
+                    resolved = MinecraftMathAdapter.toMinecraft(
+                            endpointResult.resolvedMovement());
                 }
 
                 case PASSIVE_AABB -> {
@@ -271,9 +289,8 @@ public final class EntityMovementIntegration {
                         );
             }
         } catch (CollisionSceneCoverageException uncovered) {
-            if (GravityDebugLog.ENABLED) {
-                GravityDebugLog.log(
-                        entity,
+            if (GravityDebugLog.shouldLog(entity)) {
+                GravityDebugLog.log(entity,
                         "sable-support-transport-coverage-fail",
                         "movement=%s reason=%s",
                         GravityDebugLog.vec(movement),
@@ -291,14 +308,14 @@ public final class EntityMovementIntegration {
 
         if (endpointResult != null) {
             runtime.stageExternalSupportTransport(
-                    entity.position(),
-                    resolved,
+                    MinecraftMathAdapter.toVec3d(entity.position()),
+                    MinecraftMathAdapter.toVec3d(resolved),
                     endpointResult
             );
         } else {
             runtime.stageExternalSupportTransport(
-                    entity.position(),
-                    resolved
+                    MinecraftMathAdapter.toVec3d(entity.position()),
+                    MinecraftMathAdapter.toVec3d(resolved)
             );
         }
 
@@ -311,13 +328,25 @@ public final class EntityMovementIntegration {
             Vec3 movement,
             Runnable vanillaMove
     ) {
-        var trace = GravityDebugLog.MOVEMENT_ENABLED
+        var trace = GravityDebugLog.shouldLogMovement(entity)
                 ? cc.sighs.gravityengine.gravity.integration.diagnostics.MovementCollisionDiagnostics.begin(entity, moverType, movement)
                 : null;
+        boolean completed = false;
         try {
             moveObserved(entity, moverType, movement, vanillaMove);
+            completed = true;
+        } catch (cc.sighs.gravityengine.gravity.collision.CollisionComplexityLimitException
+                | CollisionSceneCoverageException unavailable) {
+            // An unavailable publication cannot become an empty, Vanilla-owned scene.
+            GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState()
+                    .clearPersistentSupportState();
+            entity.setDeltaMovement(Vec3.ZERO);
+            if (GravityDebugLog.shouldLog(entity)) GravityDebugLog.log(entity, "movement-capture-fail-closed", "%s", unavailable.getMessage());
         } finally {
-            if (trace != null) trace.finish(entity);
+            if (trace != null) {
+                if (completed) trace.finish(entity);
+                else trace.abort(entity);
+            }
         }
     }
 
@@ -326,10 +355,11 @@ public final class EntityMovementIntegration {
         Objects.requireNonNull(moverType);
         Objects.requireNonNull(movement);
         Objects.requireNonNull(vanillaMove);
-        GravityRuntimeState rt = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
+        GravityOperationState rt = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
         if (rt.discontinuityDestination() != null) return;
         var plan = GravityInfluencePolicy.committedPlan(entity);
-        if (!plan.needsGravityOperation() && !GravityInfluencePolicy.usesCustomBody(entity)) {
+        if (!plan.needsGravityOperation() && !GravityInfluencePolicy.usesCustomBody(entity)
+                && !GravityInfluencePolicy.hasExternalCollisionProviders(entity)) {
             vanillaMove.run();
             return;
         }
@@ -354,12 +384,64 @@ public final class EntityMovementIntegration {
         // Outermost move: one operation owns one frozen frame/scene. The
         // capture domain is derived from the actual requested movement before
         // Vanilla runs, so no solver query can lazily re-read the world.
-        var captureDomain = CollisionCaptureDomain.forTranslation(
-                MinecraftGeometryAdapter.toAabb3d(
-                        entity.getBoundingBox()),
-                MinecraftGeometryAdapter.toJoml(
-                        movement, new Vector3d()),
-                entity.maxUpStep());
+        Optional<SupportTransport> supportTransportPreflight =
+                GravityEntityAccess.cast(entity)
+                        .gravityengine$gravityComponent()
+                        .moveInterop()
+                        .subLevelMoveEvidence() == null
+                        ? EngineSupportTransportIntegration.preflight(
+                                entity,
+                                rt,
+                                entity.level().getGameTime(),
+                                1.0D
+                        )
+                        : Optional.empty();
+        Vec3 requestedTrajectory = supportTransportPreflight
+                .map(SupportTransport::displacement)
+                .map(MinecraftMathAdapter::toMinecraft)
+                .map(movement::add)
+                .orElse(movement);
+        Optional<cc.sighs.gravityengine.math.geometry.Aabb3d>
+                supportRelativeBounds =
+                supportTransportPreflight
+                        .flatMap(SupportTransport::trajectory)
+                        .filter(
+                                cc.sighs.gravityengine.gravity
+                                        .collision
+                                        .SupportMotionTrajectory::rotating
+                        )
+                        .map(
+                                cc.sighs.gravityengine.gravity
+                                        .collision
+                                        .SupportMotionTrajectory::relativeBounds
+                        );
+        var captureDomain = supportRelativeBounds
+                .map(relative -> CollisionCaptureDomain
+                        .forTranslationRange(
+                                MinecraftCollisionGeometryAdapter
+                                        .toAabb3d(
+                                                entity.getBoundingBox()
+                                        ),
+                                MinecraftMathAdapter.toVec3d(
+                                        movement
+                                ),
+                                MinecraftMathAdapter.toVec3d(
+                                        movement
+                                ),
+                                relative,
+                                entity.maxUpStep()
+                        ))
+                .orElseGet(() ->
+                        CollisionCaptureDomain.forTranslation(
+                                MinecraftCollisionGeometryAdapter
+                                        .toAabb3d(
+                                                entity.getBoundingBox()
+                                        ),
+                                MinecraftMathAdapter.toVec3d(
+                                        requestedTrajectory
+                                ),
+                                entity.maxUpStep()
+                        ));
         try (var op = cc.sighs.gravityengine.gravity.integration.GravityOperation.open(
                 entity,
                 GravityOperationType.MOVE,
@@ -376,17 +458,19 @@ public final class EntityMovementIntegration {
                 // Entity.move must not re-anchor the pose. Ordinary self-driven
                 // movement keeps the normal support-preserving preparation.
                 moverType == MoverType.PLAYER
-                        ? GravityGeometryTransitionService
-                        .PositionAuthorityPolicy.EXTERNAL_POSITION_ANCHOR
-                        : GravityGeometryTransitionService
-                        .PositionAuthorityPolicy.OPERATION_MAY_REANCHOR
+                        ? PositionAuthorityPolicy.EXTERNAL_POSITION_ANCHOR
+                        : PositionAuthorityPolicy.OPERATION_MAY_REANCHOR
         )) {
+            EngineSupportTransportIntegration.stageResolvedTransport(
+                    rt,
+                    supportTransportPreflight
+            );
             runOwnedMove(entity, moverType, movement, vanillaMove, rt);
         }
     }
 
     private static void runOwnedMove(Entity entity, MoverType type, Vec3 movement,
-                                     Runnable vanillaMove, GravityRuntimeState runtime) {
+                                     Runnable vanillaMove, GravityOperationState runtime) {
         runtime.beginMovement(GravityInfluencePolicy.collisionRoute(entity));
         var evidence = MovementProvenanceIntegration.capture(entity, type, movement);
         try (var ignored = runtime.openMovementEvidence(evidence)) {
@@ -406,17 +490,17 @@ public final class EntityMovementIntegration {
      */
     public static void invalidateMovementContinuity(Entity entity) {
         Objects.requireNonNull(entity, "entity");
-        GravityRuntimeState rt = GravityEntityAccess.cast(entity)
-                .gravityengine$gravityComponent().runtime();
+        var component = GravityEntityAccess.cast(entity)
+                .gravityengine$gravityComponent();
+        GravityOperationState rt = component.operationState();
         if (rt.isInMove() || rt.isApplyingGeometry()) {
             throw new IllegalStateException(
                     "cannot invalidate movement continuity inside a physics "
                             + "or geometry scope");
         }
-        if (GravityDebugLog.MOVEMENT_ENABLED) {
-            cc.sighs.gravityengine.gravity.integration.diagnostics.MovementCollisionDiagnostics.discontinuity(entity);
-        }
+        cc.sighs.gravityengine.gravity.integration.diagnostics.MovementCollisionDiagnostics.discontinuity(entity);
         rt.invalidateMovementContinuity();
+        component.moveInterop().clear();
         if (entity instanceof cc.sighs.gravityengine.gravity.minecraft.access.CharacterControlAccess control)
             control.gravityengine$characterControl().clear();
     }

@@ -5,18 +5,14 @@ import cc.sighs.gravityengine.gravity.integration.geometry.GravityApplicationBar
 import cc.sighs.gravityengine.gravity.integration.geometry.NativeAabbApplicationCommit;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.model.GravityCollisionRoute;
 import cc.sighs.gravityengine.network.ClientboundPlayerBodyCommitPayload;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
-
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.WeakHashMap;
+import java.util.*;
 
 /** Runs on the payload registrar's MAIN thread. No client pose-fit/recovery search. */
 public final class ClientPlayerBodyCommitHandler {
@@ -57,7 +53,7 @@ public final class ClientPlayerBodyCommitHandler {
                 mc.getConnection().handleMovePlayer(payload.correction());
                 LAST_RESYNC_REQUEST.remove(player);
             }
-            GravityDebugLog.log(player, "body-handoff-applied",
+            if (GravityDebugLog.shouldLog(player)) GravityDebugLog.log(player, "body-handoff-applied",
                     "epoch=%s teleportId=%s custom=%s position=%s",
                     payload.applicationEpoch(), payload.correction().getId(),
                     payload.application().plan().usesCustomBody(), GravityDebugLog.vec(player.position()));
@@ -86,7 +82,7 @@ public final class ClientPlayerBodyCommitHandler {
         long appliedEpoch = APPLIED_EPOCH.getOrDefault(player, -1L);
         if (payload.applicationEpoch() <= appliedEpoch) return;
         if (cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.collisionRoute(player)
-                != cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.CollisionRoute.VANILLA) {
+                != GravityCollisionRoute.VANILLA) {
             // Prediction may have entered an exact frame since the server snapshot.
             // Do not locally convert a capsule or discard authority indefinitely.
             long last = LAST_RESYNC_REQUEST.getOrDefault(player, Long.MIN_VALUE);
@@ -103,11 +99,11 @@ public final class ClientPlayerBodyCommitHandler {
             ClientGravitySyncService.applySnapshot(player, a);
             NativeAabbApplicationCommit.installCommitted(
                     player, payload.application(), payload.installedFrame());
-            GravityEntityAccess.cast(player).gravityengine$gravityComponent().takePending();
+            GravityEntityAccess.cast(player).gravityengine$gravityComponent().state().takePending();
             APPLIED_EPOCH.put(player, payload.applicationEpoch());
         }
         // No refreshDimensions, position/history/rotation write, velocity reset or ACK.
-        GravityDebugLog.log(player, "native-application-applied",
+        if (GravityDebugLog.shouldLog(player)) GravityDebugLog.log(player, "native-application-applied",
                 "epoch=%s plan=%s position=%s velocity=%s",
                 payload.applicationEpoch(), payload.application().plan().kind(),
                 GravityDebugLog.vec(player.position()), GravityDebugLog.vec(player.getDeltaMovement()));
@@ -131,7 +127,7 @@ public final class ClientPlayerBodyCommitHandler {
 
     private static void install(Player player, ClientboundPlayerBodyCommitPayload payload) {
         var component = GravityEntityAccess.cast(player).gravityengine$gravityComponent();
-        var runtime = component.runtime();
+        var runtime = component.operationState();
         if (runtime.isInMove()) throw new IllegalStateException("body commit during a live movement");
         // Desired assignment/suppression is separate from the committed application below.
         ClientGravitySyncService.applySnapshot(player, payload.assignment());
@@ -141,7 +137,7 @@ public final class ClientPlayerBodyCommitHandler {
             player.setPose(payload.pose());
             // A same-pose snapshot may arrive after another authoritative size update.
             player.refreshDimensions();
-            component.commitApplication(payload.application());
+            component.state().commitApplication(payload.application());
             if (payload.installedFrame() != null) {
                 GravityEntityGeometry.installFromPositionAnchor(player, payload.installedFrame(), anchor);
             } else {
@@ -151,7 +147,7 @@ public final class ClientPlayerBodyCommitHandler {
             player.fallDistance = 0.0F;
             player.setOnGround(false);
         }
-        component.takePending();
+        component.state().takePending();
         APPLIED_EPOCH.put(player, payload.applicationEpoch());
     }
 

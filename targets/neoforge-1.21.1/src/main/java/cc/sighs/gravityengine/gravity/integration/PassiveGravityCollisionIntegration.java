@@ -1,16 +1,16 @@
 package cc.sighs.gravityengine.gravity.integration;
 
 import cc.sighs.gravityengine.gravity.collision.CombinedVectorRoute;
-import cc.sighs.gravityengine.gravity.collision.MinecraftGeometryAdapter;
 import cc.sighs.gravityengine.gravity.collision.PassiveGravityMoveResult;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.OrientedBox;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState.CollisionOperationContext;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState.CollisionOperationContext;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Vector3d;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -23,15 +23,11 @@ public final class PassiveGravityCollisionIntegration {
         PassiveGravityMoveResult result =
                 resolve(entity, movement);
 
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity)
-                .gravityengine$gravityComponent().runtime();
+        GravityOperationState runtime = GravityEntityAccess.cast(entity)
+                .gravityengine$gravityComponent().operationState();
 
         runtime.setCurrentPassiveMoveResult(result);
-        runtime.setPreResolved(
-                movement,
-                MinecraftGeometryAdapter.toMinecraft(
-                        result.appliedMovement()));
-        return MinecraftGeometryAdapter.toMinecraft(
+        return MinecraftMathAdapter.toMinecraft(
                 result.appliedMovement());
     }
 
@@ -42,7 +38,7 @@ public final class PassiveGravityCollisionIntegration {
         PassiveGravityMoveResult result =
                 resolve(entity, movement);
 
-        return MinecraftGeometryAdapter.toMinecraft(
+        return MinecraftMathAdapter.toMinecraft(
                 result.appliedMovement()
         );
     }
@@ -53,8 +49,8 @@ public final class PassiveGravityCollisionIntegration {
     ) {
         Objects.requireNonNull(entity, "entity");
         Objects.requireNonNull(movement, "movement");
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity)
-                .gravityengine$gravityComponent().runtime();
+        GravityOperationState runtime = GravityEntityAccess.cast(entity)
+                .gravityengine$gravityComponent().operationState();
         CollisionOperationContext operation = runtime.collisionOperation();
         if (operation == null) {
             throw new IllegalStateException(
@@ -63,10 +59,9 @@ public final class PassiveGravityCollisionIntegration {
         }
         return CombinedVectorRoute.resolve(
                 OrientedBox.axisAligned(
-                        MinecraftGeometryAdapter.toAabb3d(
+                        MinecraftCollisionGeometryAdapter.toAabb3d(
                                 entity.getBoundingBox())),
-                MinecraftGeometryAdapter.toJoml(
-                        movement, new Vector3d()),
+                MinecraftMathAdapter.toVec3d(movement),
                 runtime.activeFrame(),
                 operation.scene(),
                 operation.geometryContext()
@@ -80,14 +75,16 @@ public final class PassiveGravityCollisionIntegration {
     /** Accepted locomotion excludes overlap recovery/depenetration. */
     public static Vec3 locomotionMovement(PassiveGravityMoveResult result) {
         Objects.requireNonNull(result, "result");
-        return MinecraftGeometryAdapter.toMinecraft(
-                result.appliedMovement().sub(result.recoveryMovement()));
+        return MinecraftMathAdapter.toMinecraft(
+                result.appliedMovement()
+                        .subtract(result.recoveryMovement()));
     }
 
     /** Fall movement uses accepted locomotion along the frozen gravity up. */
     public static double fallDistanceVertical(PassiveGravityMoveResult result) {
         Objects.requireNonNull(result, "result");
-        return locomotionMovement(result).dot(result.frame().up());
+        return MinecraftMathAdapter.toVec3d(locomotionMovement(result))
+                .dot(result.frame().up());
     }
 
     /** A downward supporting collision is landing evidence even without endpoint support. */
@@ -100,10 +97,9 @@ public final class PassiveGravityCollisionIntegration {
             Vec3 velocity
     ) {
         if (result == null || result.indeterminate()) return velocity;
-        return MinecraftGeometryAdapter.toMinecraft(
+        return MinecraftMathAdapter.toMinecraft(
                 CombinedVectorRoute.projectVelocity(
-                        MinecraftGeometryAdapter.toJoml(
-                                velocity, new Vector3d()),
+                        MinecraftMathAdapter.toVec3d(velocity),
                         result.blockingNormals()));
     }
 
@@ -111,7 +107,9 @@ public final class PassiveGravityCollisionIntegration {
             PassiveGravityMoveResult result
     ) {
         return result == null || result.indeterminate()
-                ? Optional.empty() : result.supportBlock();
+                ? Optional.empty()
+                : result.supportBlock()
+                        .map(MinecraftMathAdapter::toBlockPos);
     }
 
     /** Applies vanilla scalar coefficients in the frozen gravity frame. */
@@ -132,7 +130,8 @@ public final class PassiveGravityCollisionIntegration {
             return velocity;
         }
 
-        Vec3 up = result.frame().up();
+        Vec3 up = MinecraftMathAdapter.toMinecraft(
+                result.frame().up());
         double vertical = velocity.dot(up);
         Vec3 tangent = velocity.subtract(
                 up.scale(vertical)
@@ -162,7 +161,7 @@ public final class PassiveGravityCollisionIntegration {
         return result == null
                 || result.frame()
                 .down()
-                .distanceToSqr(
+                .distanceSquared(
                         cc.sighs.gravityengine.gravity.GravityState.DEFAULT_DOWN
                 )
                 <= 1.0E-12D;
@@ -171,8 +170,8 @@ public final class PassiveGravityCollisionIntegration {
     private static PassiveGravityMoveResult completedThisTick(Entity entity) {
         Objects.requireNonNull(entity, "entity");
 
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity)
-                .gravityengine$gravityComponent().runtime();
+        GravityOperationState runtime = GravityEntityAccess.cast(entity)
+                .gravityengine$gravityComponent().operationState();
 
         return runtime.lastPassiveMoveResult(
                 entity.level().getGameTime()

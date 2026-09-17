@@ -1,22 +1,18 @@
 package cc.sighs.gravityengine.mixin;
 
 import cc.sighs.gravityengine.gravity.GravityFrame;
-import cc.sighs.gravityengine.gravity.collision.*;
+import cc.sighs.gravityengine.gravity.collision.GravityMoveResult;
 import cc.sighs.gravityengine.gravity.component.EntityGravityComponent;
-import cc.sighs.gravityengine.gravity.debug.GravityDebugLog;
-import cc.sighs.gravityengine.gravity.integration.ContactVelocityIntegration;
-import cc.sighs.gravityengine.gravity.integration.EntityMovementIntegration;
-import cc.sighs.gravityengine.gravity.integration.EntityPositionIntegration;
+import cc.sighs.gravityengine.gravity.integration.*;
+import cc.sighs.gravityengine.gravity.integration.compat.sable.SableMovementCompatibility;
 import cc.sighs.gravityengine.gravity.integration.vanilla.VanillaBodySensors;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
-
-import cc.sighs.gravityengine.gravity.integration.compat.sable.SableMovementCompatibility;
-import cc.sighs.gravityengine.gravity.integration.GravityEntityTickLifecycle;
-import cc.sighs.gravityengine.gravity.integration.LivingGravityIntegration;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.gravity.model.GravityCollisionRoute;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import cc.sighs.gravityengine.gravity.runtime.VanillaCollisionState;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -33,9 +29,9 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -81,7 +77,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
                     to=@At(value="INVOKE", target="Lnet/minecraft/world/entity/Entity;getMovementEmission()Lnet/minecraft/world/entity/Entity$MovementEmission;")))
     private double gravityengine$verticalResponseRequested(Vec3 vector, Operation<Double> original) {
         var entity = (Entity) (Object) this;
-        if (EntityMovementIntegration.movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA)
+        if (EntityMovementIntegration.movementRoute(entity) == GravityCollisionRoute.VANILLA)
             return original.call(vector);
         return EntityMovementIntegration.movementVerticalResponse(entity) ? 1 : 0;
     }
@@ -89,7 +85,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
             slice=@Slice(from=@At(value="INVOKE", target="Lnet/minecraft/world/level/block/state/BlockState;getBlock()Lnet/minecraft/world/level/block/Block;"),
                     to=@At(value="INVOKE", target="Lnet/minecraft/world/entity/Entity;getMovementEmission()Lnet/minecraft/world/entity/Entity$MovementEmission;")))
     private double gravityengine$verticalResponseResolved(Vec3 vector, Operation<Double> original) {
-        return EntityMovementIntegration.movementRoute((Entity) (Object) this) == GravityInfluencePolicy.CollisionRoute.VANILLA
+        return EntityMovementIntegration.movementRoute((Entity) (Object) this) == GravityCollisionRoute.VANILLA
                 ? original.call(vector) : 0;
     }
 
@@ -109,7 +105,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
             @com.llamalad7.mixinextras.sugar.Share("insideCell") com.llamalad7.mixinextras.sugar.ref.LocalBooleanRef accepted) {
         boolean custom = GravityInfluencePolicy.usesCustomBody(entity);
         if (custom && body.get() == null) body.set(cc.sighs.gravityengine.gravity.integration.vanilla.VanillaBodySensors.captureBody(entity));
-        accepted.set(gravityengine$gravityComponent.runtime().discontinuityDestination() == null
+        accepted.set(gravityengine$gravityComponent.operationState().discontinuityDestination() == null
                 && (!custom || cc.sighs.gravityengine.gravity.integration.vanilla.VanillaBodySensors.occupiesCell(body.get(), pos)));
         if (accepted.get()) original.call(state, level, pos, entity);
     }
@@ -127,7 +123,9 @@ public abstract class EntityMixin implements GravityEntityAccess {
         Entity entity = (Entity) (Object) this;
         return GravityInfluencePolicy.usesCustomLocomotion(entity)
                 ? cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess.authoritativeFrame(entity)
-                        .worldToLocal(velocity).y
+                        .worldToLocal(
+                                MinecraftMathAdapter.toVec3d(velocity))
+                        .y()
                 : original.call(velocity);
     }
 
@@ -186,8 +184,8 @@ public abstract class EntityMixin implements GravityEntityAccess {
         this.mainSupportingBlockPos = state.mainSupportingBlockPos();
         this.onGroundNoBlocks = this.onGround && this.mainSupportingBlockPos.isEmpty();
     }
-    @Override public GravityMoveResult gravityengine$getCurrentMoveResult() { return gravityengine$gravityComponent.runtime().currentMoveResult(); }
-    @Override public void gravityengine$setCurrentMoveResult(GravityMoveResult r) { gravityengine$gravityComponent.runtime().setCurrentMoveResult(r); }
+    @Override public GravityMoveResult gravityengine$getCurrentMoveResult() { return gravityengine$gravityComponent.operationState().currentMoveResult(); }
+    @Override public void gravityengine$setCurrentMoveResult(GravityMoveResult r) { gravityengine$gravityComponent.operationState().setCurrentMoveResult(r); }
 
     @WrapMethod(method = "move") private void gravityengine$moveWithGravity(MoverType t, Vec3 m, Operation<Void> o) {
         EntityMovementIntegration.move((Entity)(Object)this, t, m, () -> o.call(t, m));
@@ -197,63 +195,18 @@ public abstract class EntityMixin implements GravityEntityAccess {
     @Inject(method = "push(DDD)V", at = @At("TAIL"), require = 1)
     private void gravityengine$captureExternalPush(double x, double y, double z, CallbackInfo ci) {
         Entity entity = (Entity) (Object) this;
-        if (EntityMovementIntegration.movementRoute(entity) != GravityInfluencePolicy.CollisionRoute.VANILLA) {
-            gravityengine$gravityComponent.runtime().recordExternalPush(entity.level().getGameTime(), new Vec3(x, y, z));
+        if (EntityMovementIntegration.movementRoute(entity) != GravityCollisionRoute.VANILLA) {
+            gravityengine$gravityComponent.operationState().recordExternalPush(
+                    entity.level().getGameTime(),
+                    MinecraftMathAdapter.toVec3d(new Vec3(x, y, z)));
         }
     }
 
-    /** Trace every notable world-domain Vec3 velocity write without changing it. */
-    @Inject(
-            method = "setDeltaMovement(Lnet/minecraft/world/phys/Vec3;)V",
-            at = @At("HEAD"),
-            require = 1
-    )
-    private void gravityengine$traceNotableVecVelocityWrite(
-            Vec3 incoming,
-            CallbackInfo ci
-    ) {
-        gravityengine$gravityComponent.runtime()
-                .recordPostDiscontinuityVelocity(incoming);
-        if (!GravityDebugLog.ENABLED) {
-            return;
-        }
-        Entity entity = (Entity) (Object) this;
-        if (EntityMovementIntegration.movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA) return;
-
-        GravityFrame frame = GravityFrameAccess.reliableFrame(entity);
-        if (frame == null) return;
-        Vec3 before = entity.getDeltaMovement();
-        if (!GravityDebugLog.isNotableVerticalChange(frame, before, incoming)) {
-            return;
-        }
-
-        Vec3 beforeLocal = frame.worldToLocal(before);
-        Vec3 incomingLocal = frame.worldToLocal(incoming);
-        GravityRuntimeState runtime = gravityengine$gravityComponent.runtime();
-        GravityMoveResult result = runtime.currentMoveResult();
-        GravityDebugLog.log(
-                entity,
-                "velocity-set-vec-notable",
-                "beforeWorld=%s beforeLocal=%s incomingWorld=%s incomingLocal=%s "
-                        + "deltaLocal=%s onGround=%s horizontalCollision=%s "
-                        + "verticalCollision=%s verticalCollisionBelow=%s "
-                        + "runtimeInMove=%s runtimeApplyingGeometry=%s %s %s "
-                        + "caller=%s",
-                GravityDebugLog.vec(before),
-                GravityDebugLog.vec(beforeLocal),
-                GravityDebugLog.vec(incoming),
-                GravityDebugLog.vec(incomingLocal),
-                GravityDebugLog.vec(incomingLocal.subtract(beforeLocal)),
-                entity.onGround(),
-                entity.horizontalCollision,
-                entity.verticalCollision,
-                entity.verticalCollisionBelow,
-                runtime.isInMove(),
-                runtime.isApplyingGeometry(),
-                GravityDebugLog.formatMoveResult(result),
-                GravityDebugLog.verticalChangeFlags(beforeLocal, incomingLocal),
-                GravityDebugLog.callerStack()
-        );
+    /** Production discontinuity velocity ownership, independent of diagnostics. */
+    @Inject(method = "setDeltaMovement(Lnet/minecraft/world/phys/Vec3;)V", at = @At("HEAD"), require = 1)
+    private void gravityengine$recordDiscontinuityVelocity(Vec3 incoming, CallbackInfo ci) {
+        gravityengine$gravityComponent.operationState().recordPostDiscontinuityVelocity(
+                MinecraftMathAdapter.toVec3d(incoming));
     }
 
     /*
@@ -270,7 +223,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
      * rebuild; every raw or nested composite write inside it is an
      * implementation detail and must not publish independently.  This depth
      * is Mixin-local locator state and deliberately never lives in
-     * GravityRuntimeState.
+     * GravityOperationState.
      */
     @Unique private int gravityengine$positionWriteDepth;
     /**
@@ -380,8 +333,12 @@ public abstract class EntityMixin implements GravityEntityAccess {
                 entity, before, entity.position());
     }
 
+    @Unique private boolean gravityengine$restoringDimensionsPose;
+
     @WrapMethod(method = "refreshDimensions")
     private void gravityengine$refreshDims(Operation<Void> original) {
+        // Rollback changes synced pose without firing the Size event a second time.
+        if (gravityengine$restoringDimensionsPose) return;
         Entity entity = (Entity) (Object) this;
 
         if (!GravityInfluencePolicy.usesCustomBody(entity)) {
@@ -389,7 +346,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
             return;
         }
 
-        GravityRuntimeState runtime = gravityengine$gravityComponent.runtime();
+        GravityOperationState runtime = gravityengine$gravityComponent.operationState();
 
         /*
          * An enclosing geometry transaction owns this dimensions mutation.
@@ -415,15 +372,9 @@ public abstract class EntityMixin implements GravityEntityAccess {
             return;
         }
 
-        /*
-         * A dimensions change that appears unexpectedly inside a live movement
-         * operation has no declared geometry owner.  Do not silently destroy the
-         * live movement transaction.
-         */
         if (runtime.isInMove()) {
-            throw new IllegalStateException(
-                    "unowned refreshDimensions inside an active gravity operation"
-            );
+            gravityengine$refreshDimensionsInMove(entity, runtime, original);
+            return;
         }
 
         /*
@@ -441,11 +392,16 @@ public abstract class EntityMixin implements GravityEntityAccess {
          * Vanilla is allowed to rebuild its temporary dimensions/AABB while the
          * geometry scope suppresses primitive position/body publications.
          */
-        try (GravityRuntimeState.GeometryScope ignored =
+        try (GravityOperationState.GeometryScope ignored =
                      runtime.openGeometryMutation()) {
             original.call();
             if (!cc.sighs.gravityengine.gravity.integration.geometry.GravityGeometryTransitionService
-                    .dimensionsChangeLegal(entity, oldBody, preservedPositionAnchor, frame)) {
+                    .dimensionsChangeLegal(
+                            entity,
+                            oldBody,
+                            MinecraftMathAdapter.toVec3d(
+                                    preservedPositionAnchor),
+                            frame)) {
                 if (this.gravityengine$poseBeforeRefresh != null) entity.setPose(this.gravityengine$poseBeforeRefresh);
                 this.dimensions = oldDimensions;
                 this.eyeHeight = oldEyeHeight;
@@ -466,6 +422,108 @@ public abstract class EntityMixin implements GravityEntityAccess {
                 entity,
                 preservedPositionAnchor
         );
+    }
+
+    @Unique
+    private void gravityengine$refreshDimensionsInMove(
+            Entity entity, GravityOperationState runtime, Operation<Void> original) {
+        var frame = runtime.geometryReferenceFrame();
+        var position = entity.position();
+        var oldDimensions = this.dimensions;
+        float oldEyeHeight = this.eyeHeight;
+        var oldProxy = entity.getBoundingBox();
+        var oldBody = GravityEntityGeometry.exactBody(entity, frame);
+        var oldPose = this.gravityengine$poseBeforeRefresh;
+        var operation = runtime.collisionOperation();
+        // A completed move owns the endpoint. A pre-solve refresh owns time zero.
+        boolean atEndpoint = runtime.currentMoveResult() != null
+                || runtime.currentPassiveMoveResult() != null
+                || runtime.discontinuityDestination() != null;
+        boolean committed = false;
+        Throwable failure = null;
+
+        try (var ignored = runtime.openGeometryMutation()) {
+            try {
+                original.call();
+                var decision = cc.sighs.gravityengine.gravity.kinematic.geometry
+                        .CharacterDimensionPolicy.decide(dimensions.width(), dimensions.height());
+                if (decision != cc.sighs.gravityengine.gravity.kinematic.geometry
+                        .CharacterDimensionPolicy.Decision.CAPSULE) return;
+
+                var candidate = GravityEntityGeometry.candidateBody(
+                        entity, this.dimensions, position, frame);
+                boolean legal = candidate.equals(oldBody) || entity.noPhysics;
+                if (!legal && operation != null) {
+                    try {
+                        double time = atEndpoint ? operation.time().intervalTicks() : 0.0D;
+                        legal = cc.sighs.gravityengine.gravity.collision.BodyCollisionDelta
+                                .comparePoseAt(oldBody, candidate, operation.scene(), time,
+                                        operation.geometryContext()).legal();
+                    } catch (cc.sighs.gravityengine.gravity.collision.CollisionComplexityLimitException
+                             | cc.sighs.gravityengine.gravity.collision.CollisionSceneCoverageException unavailable) {
+                        // Unknown fit rejects this resize; it never means empty geometry.
+                        legal = false;
+                    }
+                }
+                if (!legal) return;
+
+                // Network anchor remains authoritative; Vanilla's axis-Y size
+                // fudge is not an independent translation of a rotated body.
+                GravityEntityGeometry.commitCustomBody(entity, frame, position, candidate);
+                committed = true;
+                if (!oldDimensions.equals(this.dimensions)) runtime.markBodyDimensionsChanged();
+            } catch (RuntimeException | Error thrown) {
+                failure = thrown;
+                throw thrown;
+            } finally {
+                try {
+                    try {
+                        if (!committed) {
+                            gravityengine$restoreRejectedDimensions(entity, oldPose, oldDimensions,
+                                    oldEyeHeight, position, oldProxy, frame);
+                        }
+                    } finally {
+                        // Invalidate even if original/validation/commit/rollback failed.
+                        // The old movement must not republish stale contact geometry.
+                        try {
+                            runtime.supersedeMovement(MinecraftMathAdapter.toVec3d(entity.position()));
+                        } finally {
+                            runtime.clearPersistentSupportState();
+                        }
+                    }
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (failure != null) failure.addSuppressed(cleanupFailure);
+                    else throw cleanupFailure;
+                }
+            }
+        }
+    }
+
+    @Unique
+    private void gravityengine$restoreRejectedDimensions(
+            Entity entity, net.minecraft.world.entity.Pose oldPose,
+            net.minecraft.world.entity.EntityDimensions oldDimensions, float oldEyeHeight,
+            Vec3 position, AABB oldProxy, GravityFrame frame) {
+        boolean previous = this.gravityengine$restoringDimensionsPose;
+        this.gravityengine$restoringDimensionsPose = true;
+        this.dimensions = oldDimensions;
+        this.eyeHeight = oldEyeHeight;
+        try {
+            // A rejected geometry request must never undo semantic death.
+            // DYING retains the last valid installed dimensions if a Size hook
+            // proposed an unsupported or obstructed death shape.
+            boolean dying = entity.getPose() == net.minecraft.world.entity.Pose.DYING
+                    || entity instanceof net.minecraft.world.entity.LivingEntity living
+                    && living.isDeadOrDying();
+            if (!dying && oldPose != null && entity.getPose() != oldPose) {
+                entity.setPose(oldPose);
+            }
+        } finally {
+            this.gravityengine$restoringDimensionsPose = previous;
+            this.dimensions = oldDimensions;
+            this.eyeHeight = oldEyeHeight;
+            GravityEntityGeometry.restoreExactGeometry(entity, position, oldProxy, frame);
+        }
     }
 
     @Inject(method = "getEyePosition()Lnet/minecraft/world/phys/Vec3;", at = @At("HEAD"), cancellable = true)
@@ -490,20 +548,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
     @Inject(method = "collide", at = @At("HEAD"), cancellable = true, require = 1)
     private void gravityengine$collide(Vec3 m, CallbackInfoReturnable<Vec3> cir) {
         var e = (Entity)(Object)this;
-        if (EntityMovementIntegration.movementRoute(e) != GravityInfluencePolicy.CollisionRoute.VANILLA) cir.setReturnValue(EntityMovementIntegration.collide(e, m));
-        else if (GravityDebugLog.MOVEMENT_ENABLED) {
-            cc.sighs.gravityengine.gravity.integration.diagnostics.MovementCollisionDiagnostics.vanillaInput(e, m);
-        }
-    }
-
-    /** Observe the actual Vanilla collision return; no second solve or custom
-     * interpretation of Vanilla's step-selection policy. */
-    @Inject(method = "collide", at = @At("RETURN"), require = 1)
-    private void gravityengine$observeVanillaCollision(Vec3 movement, CallbackInfoReturnable<Vec3> cir) {
-        var entity = (Entity) (Object) this;
-        if (GravityDebugLog.MOVEMENT_ENABLED && EntityMovementIntegration.movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA) {
-            cc.sighs.gravityengine.gravity.integration.diagnostics.MovementCollisionDiagnostics.vanillaResult(entity, cir.getReturnValue());
-        }
+        if (EntityMovementIntegration.movementRoute(e) != GravityCollisionRoute.VANILLA) cir.setReturnValue(EntityMovementIntegration.collide(e, m));
     }
 
     /** 1.21.1 / NeoForge 21.1.249 noPhysics branch: old position anchor plus raw request. */
@@ -591,7 +636,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
                         resolved,
                         original.call(resolved),
                         EntityMovementIntegration.movementRoute((Entity) (Object) this)
-                                != GravityInfluencePolicy.CollisionRoute.VANILLA
+                                != GravityCollisionRoute.VANILLA
                 );
     }
 
@@ -639,7 +684,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
             original.call(entity, x, y, z);
             return;
         }
-        GravityRuntimeState runtime = gravityengine$gravityComponent.runtime();
+        GravityOperationState runtime = gravityengine$gravityComponent.operationState();
         GravityFrame frame = runtime.isInMove()
                 ? runtime.activeFrame()
                 : runtime.geometryReferenceFrame();
@@ -664,10 +709,11 @@ public abstract class EntityMixin implements GravityEntityAccess {
     @Redirect(method = "move", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/phys/Vec3;horizontalDistance()D"), require = 1)
     private double gravityengine$walkDist(Vec3 m) {
         var e = (Entity)(Object)this;
-        if (EntityMovementIntegration.movementRoute(e) == GravityInfluencePolicy.CollisionRoute.VANILLA) return m.horizontalDistance();
-        var loc = gravityengine$gravityComponent.runtime()
-                .activeFrame().worldToLocal(m);
-        return Math.sqrt(loc.x * loc.x + loc.z * loc.z);
+        if (EntityMovementIntegration.movementRoute(e) == GravityCollisionRoute.VANILLA) return m.horizontalDistance();
+        var loc = gravityengine$gravityComponent.operationState()
+                .activeFrame().worldToLocal(
+                        MinecraftMathAdapter.toVec3d(m));
+        return Math.sqrt(loc.x() * loc.x() + loc.z() * loc.z());
     }
 
     @Inject(
@@ -758,9 +804,9 @@ public abstract class EntityMixin implements GravityEntityAccess {
             double z,
             Operation<Void> original
     ) {
-        GravityInfluencePolicy.CollisionRoute route =
+        GravityCollisionRoute route =
                 EntityMovementIntegration.movementRoute(entity);
-        if (route == GravityInfluencePolicy.CollisionRoute.VANILLA) {
+        if (route == GravityCollisionRoute.VANILLA) {
             original.call(entity, x, y, z);
             return;
         }
@@ -789,7 +835,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
             Entity entity,
             Operation<BlockPos> original
     ) {
-        if (EntityMovementIntegration.movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA) {
+        if (EntityMovementIntegration.movementRoute(entity) == GravityCollisionRoute.VANILLA) {
             return original.call(entity);
         }
 
@@ -815,12 +861,17 @@ public abstract class EntityMixin implements GravityEntityAccess {
             target = "Lnet/minecraft/world/phys/Vec3;multiply(DDD)Lnet/minecraft/world/phys/Vec3;"), require = 1)
     private Vec3 gravityengine$blockSpeed(Vec3 velocity, double x, double y, double z, Operation<Vec3> original) {
         var entity = (Entity) (Object) this;
-        if (EntityMovementIntegration.movementRoute(entity) == GravityInfluencePolicy.CollisionRoute.VANILLA) {
+        if (EntityMovementIntegration.movementRoute(entity) == GravityCollisionRoute.VANILLA) {
             return original.call(velocity, x, y, z);
         }
-        var runtime = gravityengine$gravityComponent.runtime();
+        var runtime = gravityengine$gravityComponent.operationState();
         var frame = runtime.activeFrame();
-        return frame.localToWorld(frame.worldToLocal(velocity).multiply(x, y, z));
+        return MinecraftMathAdapter.toMinecraft(
+                frame.localToWorld(
+                        frame.worldToLocal(
+                                        MinecraftMathAdapter.toVec3d(
+                                                velocity))
+                                .multiply(x, y, z)));
     }
 
     @Unique
@@ -828,7 +879,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
         var state = EntityMovementIntegration.supportingCollisionState(entity);
         if (state != null && state.mainSupportingBlockPos().isPresent()) return state.mainSupportingBlockPos().get();
         if (this.mainSupportingBlockPos.isPresent()) return this.mainSupportingBlockPos.get();
-        var frame = gravityengine$gravityComponent.runtime().activeFrame();
+        var frame = gravityengine$gravityComponent.operationState().activeFrame();
         return VanillaBodySensors.gravityRelativeOnPos(frame, GravityEntityGeometry.gravityFeet(entity, frame));
     }
 

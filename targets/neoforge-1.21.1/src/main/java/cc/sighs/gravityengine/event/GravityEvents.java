@@ -1,8 +1,9 @@
 package cc.sighs.gravityengine.event;
 
 import cc.sighs.gravityengine.gravity.assignment.GravityAssignmentService;
+import cc.sighs.gravityengine.gravity.collision.provider.RigidCollisionPublicationRegistry;
 import cc.sighs.gravityengine.gravity.field.GravityFieldRuntime;
-import cc.sighs.gravityengine.gravity.integration.OverworldGravityFieldLifecycle;
+import cc.sighs.gravityengine.gravity.integration.EntityMovementIntegration;
 import cc.sighs.gravityengine.gravity.integration.PlayerPhysicalLoadBootstrap;
 import cc.sighs.gravityengine.network.BodyAttitudeReplicationService;
 import cc.sighs.gravityengine.network.GravitySyncService;
@@ -13,7 +14,6 @@ import net.minecraft.world.level.Level;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
-import cc.sighs.gravityengine.gravity.integration.EntityMovementIntegration;
 
 public final class GravityEvents {
     @SubscribeEvent
@@ -74,12 +74,6 @@ public final class GravityEvents {
             }
         }
     }
-    @SubscribeEvent
-    public static void onLevelLoad(LevelEvent.Load event) {
-        if (event.getLevel() instanceof Level level) {
-            OverworldGravityFieldLifecycle.register(level);
-        }
-    }
 
     @SubscribeEvent
     public static void onLevelUnload(LevelEvent.Unload event) {
@@ -90,6 +84,8 @@ public final class GravityEvents {
              */
             cc.sighs.gravityengine.gravity.integration.collision.CollisionObstacleRegistry
                     .remove(level);
+            RigidCollisionPublicationRegistry.clear(level);
+            cc.sighs.gravityengine.gravity.integration.compat.sable.SableMovementCompatibility.unload(level);
             GravityFieldRuntime.remove(level);
         }
     }
@@ -104,6 +100,15 @@ public final class GravityEvents {
             if (applied.assignmentAccepted()) {
                 GravitySyncService.syncTracking(e);
             }
+        }
+        var runtime = cc.sighs.gravityengine.gravity.minecraft.access
+                .GravityEntityAccess.cast(e)
+                .gravityengine$gravityComponent()
+                .operationState();
+        if (!runtime.isInMove()) {
+            runtime.publishTickEvaluation(
+                    GravityAssignmentService.physicalEvaluation(e, r)
+            );
         }
     }
 }

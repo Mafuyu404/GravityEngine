@@ -1,6 +1,8 @@
 package cc.sighs.gravityengine.gravity.integration.collision;
 
 import cc.sighs.gravityengine.gravity.collision.*;
+import cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -44,8 +46,8 @@ final class CollisionWorldQuery {
                     throw PrimitiveEnumerationAbort.INSTANCE;
                 }
                 built.add(new BlockObstacle(
-                        position,
-                        MinecraftGeometryAdapter.toAabb3d(
+                        MinecraftMathAdapter.toCellPos(position),
+                        MinecraftCollisionGeometryAdapter.toAabb3d(
                                 new AABB(
                                         minX, minY, minZ,
                                         maxX, maxY, maxZ)

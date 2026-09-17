@@ -4,7 +4,7 @@ import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.model.GravitySample;
 import cc.sighs.gravityengine.gravity.movement.CharacterControlPlan;
 import cc.sighs.gravityengine.gravity.movement.TravelCapturePlan;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
 
@@ -28,7 +28,9 @@ public record GravityTravelContext(
 
     public GravityFrame frame() { return operation.frame(); }
     public GravitySample sample() { return operation.sample(); }
-    public GravityRuntimeState runtime() { return operation.component().runtime(); }
+    public GravityOperationState operationState() {
+        return operation.component().operationState();
+    }
 
     @Override
     public void close() {

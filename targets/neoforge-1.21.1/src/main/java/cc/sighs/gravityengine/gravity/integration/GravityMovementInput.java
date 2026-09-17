@@ -1,15 +1,14 @@
 package cc.sighs.gravityengine.gravity.integration;
 
-import cc.sighs.gravityengine.gravity.collision.*;
 import cc.sighs.gravityengine.gravity.GravityFrame;
-import cc.sighs.gravityengine.gravity.model.*;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.movement.GravityPhysics;
 import cc.sighs.gravityengine.look.PlayerLookIntegration;
 import cc.sighs.gravityengine.look.SemanticLookSnapshot;
-import java.util.Objects;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
+
+import java.util.Objects;
 
 /**
  * Converts movement input through the actor's semantic view and gravity frame.
@@ -39,12 +38,14 @@ public final class GravityMovementInput {
         Objects.requireNonNull(frame, "frame");
         SemanticLookSnapshot look =
                 PlayerLookIntegration.capture(entity, frame);
-        return GravityPhysics.calculateRelativeMovement(
-                look.forward(),
-                speed,
-                input,
-                frame,
-                look.zeroPitchForward()
+        return MinecraftMathAdapter.toMinecraft(
+                GravityPhysics.calculateRelativeMovement(
+                        look.forward(),
+                        speed,
+                        MinecraftMathAdapter.toVec3d(input),
+                        frame,
+                        look.zeroPitchForward()
+                )
         );
     }
 
@@ -62,7 +63,8 @@ public final class GravityMovementInput {
     ) {
         Objects.requireNonNull(entity, "entity");
         Objects.requireNonNull(frame, "frame");
-        return PlayerLookIntegration.capture(entity, frame)
-                .zeroPitchForward();
+        return MinecraftMathAdapter.toMinecraft(
+                PlayerLookIntegration.capture(entity, frame)
+                        .zeroPitchForward());
     }
 }

@@ -1,8 +1,12 @@
 package cc.sighs.gravityengine.network;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.attitude.BodyAttitudeState;
 import cc.sighs.gravityengine.attitude.BodyRelativeViewState;
-import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeContinuity;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeDecision;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
+import cc.sighs.gravityengine.attitude.runtime.ReplicatedAttitudeState;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -38,7 +42,7 @@ public final class BodyAttitudeStateReceiver {
 
         long revision = Math.incrementExact(before.authoritativeRevision());
         var q = update.worldFromBody();
-        var state = new BodyAttitudeState(q, q, net.minecraft.world.phys.Vec3.ZERO,
+        var state = new BodyAttitudeState(q, q, Vec3d.ZERO,
                 before.state().tick(), revision, update.initialized());
         var view = update.initialized()
                 ? BodyRelativeViewState.fromSemantic(new cc.sighs.gravityengine.attitude.SemanticView(update.worldFromController()), q,

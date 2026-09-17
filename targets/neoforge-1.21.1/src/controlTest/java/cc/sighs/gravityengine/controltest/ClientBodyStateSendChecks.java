@@ -1,6 +1,7 @@
 package cc.sighs.gravityengine.controltest;
 
-import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
+import cc.sighs.gravityengine.attitude.runtime.ReplicatedAttitudeState;
 import cc.sighs.gravityengine.client.ClientBodyAttitudeControl;
 import cc.sighs.gravityengine.network.ServerboundBodyAttitudeStatePayload;
 import net.minecraft.client.Minecraft;
@@ -13,7 +14,10 @@ import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.world.phys.Vec3;
-import java.util.*;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /** Runs the transformed LocalPlayer.sendPosition, capturing only this fixture's connection. */

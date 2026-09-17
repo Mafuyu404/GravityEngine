@@ -2,6 +2,7 @@ package cc.sighs.gravityengine.attitude.runtime;
 
 import cc.sighs.gravityengine.gravity.debug.PlayerViewDebugLog;
 import net.minecraft.world.entity.player.Player;
+
 import java.util.Objects;
 
 /** Publishes actor state and semantic look. Character geometry, support and translation have separate owners. */
@@ -36,7 +37,7 @@ public final class BodyAttitudeTransactionCoordinator {
                 applyLookRebase(player, logical.lookRebase());
                 component.commitLogicalCandidate(logical);
 
-                if (PlayerViewDebugLog.ENABLED) {
+                if (PlayerViewDebugLog.shouldLog(player)) {
                     PlayerViewDebugLog.mutation(
                             player,
                             "attitude-logical-commit/" + logical.kind(),
@@ -46,7 +47,7 @@ public final class BodyAttitudeTransactionCoordinator {
 
                 return true;
             } catch (RuntimeException failure) {
-                if (PlayerViewDebugLog.ENABLED) {
+                if (PlayerViewDebugLog.shouldLog(player)) {
                     PlayerViewDebugLog.event(
                             player,
                             "attitude-logical-rollback-before",
@@ -62,7 +63,7 @@ public final class BodyAttitudeTransactionCoordinator {
                 player.yRotO = oldYawPrevious;
                 player.xRotO = oldPitchPrevious;
 
-                if (PlayerViewDebugLog.ENABLED) {
+                if (PlayerViewDebugLog.shouldLog(player)) {
                     PlayerViewDebugLog.event(
                             player,
                             "attitude-logical-rollback-after",
@@ -90,7 +91,7 @@ public final class BodyAttitudeTransactionCoordinator {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(component, "component");
         synchronized (component) {
-            var before = PlayerViewDebugLog.ENABLED ? component.snapshot() : null;
+            var before = PlayerViewDebugLog.shouldLog(player) ? component.snapshot() : null;
             cc.sighs.gravityengine.player.CharacterControlRuntime.clearMode(player);
             component.invalidateContinuity();
             PlayerViewDebugLog.mutation(player, "attitude-invalidate", before);
@@ -110,7 +111,7 @@ public final class BodyAttitudeTransactionCoordinator {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(component, "component");
         synchronized (component) {
-            var before = PlayerViewDebugLog.ENABLED ? component.snapshot() : null;
+            var before = PlayerViewDebugLog.shouldLog(player) ? component.snapshot() : null;
             cc.sighs.gravityengine.player.CharacterControlRuntime.clearMode(player);
             component.retireAuthoritativeStream(retiredStreamEpoch);
             PlayerViewDebugLog.mutation(player, "attitude-retire-stream", before);
@@ -133,7 +134,7 @@ public final class BodyAttitudeTransactionCoordinator {
             // Chronology only. Lifecycle/reset owners clear mode and actor together.
             // ensureServerStream must not turn a valid active swim into mode=false.
             component.beginAuthoritativeStream(streamEpoch);
-            if (PlayerViewDebugLog.ENABLED) {
+            if (PlayerViewDebugLog.shouldLog(player)) {
                 PlayerViewDebugLog.event(player, "attitude-open-stream", "stream=%s", streamEpoch);
             }
         }
@@ -169,7 +170,7 @@ public final class BodyAttitudeTransactionCoordinator {
                 player,
                 "ownership-look-projection"
         )) {
-            if (PlayerViewDebugLog.ENABLED) {
+            if (PlayerViewDebugLog.shouldLog(player)) {
                 PlayerViewDebugLog.event(
                         player,
                         "ownership-look-target",

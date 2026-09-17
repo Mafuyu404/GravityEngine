@@ -1,6 +1,7 @@
 package cc.sighs.gravityengine.network;
 
 import cc.sighs.gravityengine.GravityEngine;
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityState;
 import cc.sighs.gravityengine.gravity.component.EntityGravityComponent;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
@@ -11,7 +12,6 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.Vec3;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -21,7 +21,7 @@ public record SyncGravityStatePayload(
         UUID entityUuid,
         ResourceLocation dimensionId,
         long assignmentRevision,
-        Vec3 assignedDown,
+        Vec3d assignedDown,
         double assignedStrength,
         long influenceRevision,
         GravitySuppressionReason suppressionReason,
@@ -75,19 +75,19 @@ public record SyncGravityStatePayload(
         EntityGravityComponent c =
                 GravityEntityAccess.cast(entity).gravityengine$gravityComponent();
 
-        GravityState state = c.assignedState();
+        GravityState state = c.state().assignedState();
 
         return new SyncGravityStatePayload(
                 entity.getId(),
                 entity.getUUID(),
                 entity.level().dimension().location(),
-                c.assignmentRevision(),
+                c.state().assignmentRevision(),
                 state.down(),
                 state.strength(),
-                c.influenceRevision(),
-                c.authoritativeSuppression(),
-                c.assignedAuthority(),
-                c.assignedFieldPresent()
+                c.state().influenceRevision(),
+                c.state().authoritativeSuppression(),
+                c.state().assignedAuthority(),
+                c.state().assignedFieldPresent()
         );
     }
 
@@ -100,9 +100,9 @@ public record SyncGravityStatePayload(
         buf.writeUUID(pkt.entityUuid);
         buf.writeResourceLocation(pkt.dimensionId);
         buf.writeVarLong(pkt.assignmentRevision);
-        buf.writeDouble(pkt.assignedDown.x);
-        buf.writeDouble(pkt.assignedDown.y);
-        buf.writeDouble(pkt.assignedDown.z);
+        buf.writeDouble(pkt.assignedDown.x());
+        buf.writeDouble(pkt.assignedDown.y());
+        buf.writeDouble(pkt.assignedDown.z());
         buf.writeDouble(pkt.assignedStrength);
         buf.writeVarLong(pkt.influenceRevision);
         buf.writeVarInt(pkt.suppressionReason.networkId());
@@ -115,7 +115,7 @@ public record SyncGravityStatePayload(
         UUID entityUuid = buf.readUUID();
         ResourceLocation dimensionId = buf.readResourceLocation();
         long assignmentRevision = buf.readVarLong();
-        Vec3 assignedDown = new Vec3(
+        Vec3d assignedDown = new Vec3d(
                 buf.readDouble(), buf.readDouble(), buf.readDouble());
         double assignedStrength = buf.readDouble();
         long influenceRevision = buf.readVarLong();

@@ -3,6 +3,7 @@ package cc.sighs.gravityengine.gravity.integration.vanilla;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import cc.sighs.gravityengine.look.PlayerLookIntegration;
 import cc.sighs.gravityengine.look.SemanticLookSnapshot;
@@ -95,7 +96,10 @@ public final class VanillaActorBridge {
                 attachmentFrame,
                 look,
                 GravityEntityGeometry.gravityFeetFromBodyCenter(center,
-                        GravityEntityGeometry.dimensions(entity).height(), frame.down()),
+                        GravityEntityGeometry.dimensions(entity).height(),
+                        MinecraftMathAdapter.toMinecraft(
+                                frame.down()
+                        )),
                 center,
                 eye,
                 entity.getBbWidth(),

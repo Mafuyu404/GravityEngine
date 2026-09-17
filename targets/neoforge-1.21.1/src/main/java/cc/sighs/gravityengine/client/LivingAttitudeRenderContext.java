@@ -1,6 +1,7 @@
 package cc.sighs.gravityengine.client;
 
 import cc.sighs.gravityengine.attitude.AttitudeSpaceTransform;
+
 import javax.annotation.Nullable;
 import java.util.ArrayDeque;
 import java.util.Objects;

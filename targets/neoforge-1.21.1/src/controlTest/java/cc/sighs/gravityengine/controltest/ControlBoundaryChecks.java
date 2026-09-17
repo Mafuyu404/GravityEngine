@@ -1,10 +1,13 @@
 package cc.sighs.gravityengine.controltest;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.GravityState;
 import cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityLivingAccess;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.math.Quatd;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -28,12 +31,15 @@ import java.util.UUID;
 @Mod("gravityengine_control_tests")
 public final class ControlBoundaryChecks {
     private static int assertions;
+    private static boolean awaitingTick;
     private static final net.neoforged.neoforge.registries.DeferredRegister<net.minecraft.world.level.block.Block> BLOCKS =
             net.neoforged.neoforge.registries.DeferredRegister.create(net.minecraft.core.registries.Registries.BLOCK, "gravityengine_control_tests");
     private static final java.util.function.Supplier<RecordingBlock> CALLBACK_BLOCK = BLOCKS.register("callback", RecordingBlock::new);
 
     public ControlBoundaryChecks(net.neoforged.bus.api.IEventBus bus) {
         BLOCKS.register(bus);
+        DeathGeometryChecks.register();
+        NeoForge.EVENT_BUS.addListener(ControlBoundaryChecks::afterTick);
         NeoForge.EVENT_BUS.addListener(ControlBoundaryChecks::started);
         NeoForge.EVENT_BUS.addListener(ControlBoundaryChecks::jumped);
     }
@@ -45,8 +51,23 @@ public final class ControlBoundaryChecks {
     private static void started(ServerStartedEvent event) {
         if (!event.getServer().isDedicatedServer()) return;
         try {
+            System.out.println("VERIFIED_ENGINE_LOAD_SOURCE="+cc.sighs.gravityengine.GravityEngine.class.getProtectionDomain().getCodeSource().getLocation());
             var level = event.getServer().overworld();
             level.getChunk(0, 0);
+            /*
+             * Supported-API contract checks run first so they are independent
+             * of the long native movement parity loops below. They register
+             * only into the isolated Nether runtime for the unload check and
+             * close every lease they open, so the Overworld field runtime is
+             * left in its original state; the engine installs no default field.
+             */
+            ApiBoundaryChecks.run(level);
+            MoveInteropScopeChecks.run();
+            RigidMovementChecks.run(level);
+            BodyAuthorityChecks.run(level);
+            if (cc.sighs.gravityengine.gravity.integration.compat.sable.SableMovementCompatibility.available()) {
+                SableRuntimeChecks.run(level);
+            }
             for (Vec3 down : new Vec3[]{new Vec3(0, -1, 0), new Vec3(1, 0, 0),
                     new Vec3(0, 1, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1),
                     new Vec3(0, 0, -1), new Vec3(1, -2, .5).normalize()}) {
@@ -74,10 +95,12 @@ public final class ControlBoundaryChecks {
             callbackNestedMove(level);
             nativeCallbackContract(level);
             packetOwnership(level);
+            PacketOccupancyChecks.run(level);
             GeometryAuthorityChecks.run(level);
+            DeathGeometryChecks.run(level);
             PersistenceLifecycleChecks.run(level);
             System.out.println("CONTROL_BOUNDARY_CHECKS_PASSED assertions=" + assertions);
-            java.nio.file.Files.writeString(java.nio.file.Path.of("control-boundary-result.txt"), "PASS " + assertions);
+            awaitingTick = true;
         } catch (Throwable failure) {
             failure.printStackTrace();
             System.out.println("CONTROL_BOUNDARY_CHECKS_FAILED");
@@ -85,8 +108,21 @@ public final class ControlBoundaryChecks {
                 java.nio.file.Files.writeString(java.nio.file.Path.of("control-boundary-result.txt"), "FAIL " + failure);
             } catch (java.io.IOException writeFailure) { failure.addSuppressed(writeFailure); }
         } finally {
-            event.getServer().halt(false);
+            if (!awaitingTick) event.getServer().halt(false);
         }
+    }
+
+    private static void afterTick(net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) {
+        if (!awaitingTick || !DeathGeometryChecks.tickReady(event.getServer().overworld())) return;
+        awaitingTick=false;
+        try {
+            DeathGeometryChecks.nextTick(event.getServer().overworld());
+            java.nio.file.Files.writeString(java.nio.file.Path.of("control-boundary-result.txt"), "PASS " + assertions);
+        } catch (Throwable failure) {
+            failure.printStackTrace();
+            try { java.nio.file.Files.writeString(java.nio.file.Path.of("control-boundary-result.txt"), "FAIL " + failure); }
+            catch (java.io.IOException writeFailure) { failure.addSuppressed(writeFailure); }
+        } finally { event.getServer().halt(false); }
     }
 
     private static CheckPlayer player(ServerLevel level, GravityFrame frame) {
@@ -103,11 +139,11 @@ public final class ControlBoundaryChecks {
     }
 
     private static void sneakEdge(ServerLevel level, Vec3 down) {
-        var frame = GravityFrame.fromDown(down, .08);
+        var frame = frameFromDown(down);
         var player = player(level, frame);
         player.setShiftKeyDown(true);
         player.setOnGround(true);
-        Vec3 request = frame.localToWorld(new Vec3(.06, -.1, .06));
+        Vec3 request = toWorld(frame, new Vec3(.06, -.1, .06));
         if (!cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.requiresReferenceGeometry(frame)) {
             // No GravityEngine scene exists. A custom probe here would fail; this
             // executes Vanilla's original policy and empty-world decrement loops.
@@ -115,17 +151,22 @@ public final class ControlBoundaryChecks {
         }
         try (var operation = cc.sighs.gravityengine.gravity.integration.GravityOperation.open(
                 player, cc.sighs.gravityengine.gravity.model.GravityOperationType.MOVE, player.position())) {
-            var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime();
+            var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState();
             runtime.beginMovement(cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.collisionRoute(player));
             for (var mover : MoverType.values()) {
                 near(mover == MoverType.SELF || mover == MoverType.PLAYER
-                                ? operation.frame().up().scale(-.1) : request,
+                                ? MinecraftMathAdapter.toMinecraft(
+                                        operation.frame().up().multiply(-.1)
+                                ) : request,
                         player.edge(request, mover), "native mover gate " + mover + " down=" + down);
             }
             player.getAbilities().flying = true;
             near(request, player.edge(request, MoverType.SELF), "native flying sneak gate");
             player.getAbilities().flying = false;
-            var upward = operation.frame().localToWorld(new Vec3(.06,1e-12,.06));
+            var upward = toWorld(
+                    operation.frame(),
+                    new Vec3(.06,1e-12,.06)
+            );
             near(upward, player.edge(upward, MoverType.SELF), "native strict upward gate");
             player.setShiftKeyDown(false);
             near(request, player.edge(request, MoverType.SELF), "native semantic sneak gate");
@@ -137,7 +178,7 @@ public final class ControlBoundaryChecks {
     }
 
     private static void parity(ServerLevel level, Vec3 down, Holder<MobEffect> effect, boolean noGravity) {
-        GravityFrame frame = GravityFrame.fromDown(down, .08);
+        GravityFrame frame = frameFromDown(down);
         CheckPlayer vanilla = player(level, null);
         CheckPlayer custom = player(level, frame);
         // A translated custom operation freezes look; default-reference travel
@@ -145,7 +186,7 @@ public final class ControlBoundaryChecks {
         custom.changeLookInHelper = cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.requiresReferenceGeometry(frame);
         Vec3 initial = new Vec3(.12, -.23, .31);
         vanilla.setDeltaMovement(initial);
-        custom.setDeltaMovement(frame.localToWorld(initial));
+        custom.setDeltaMovement(toWorld(frame, initial));
         vanilla.setNoGravity(noGravity);
         custom.setNoGravity(noGravity);
         if (effect != null) {
@@ -161,11 +202,11 @@ public final class ControlBoundaryChecks {
         custom.travel(input);
         check(!cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.usesCustomLocomotion(vanilla),
                 "comparison actor is Vanilla-owned");
-        near(frame.localToWorld(vanilla.getDeltaMovement()), custom.getDeltaMovement(), "travel velocity " + down + " " + effect);
-        near(frame.localToWorld(vanilla.position().subtract(vanillaBefore)),
+        near(toWorld(frame, vanilla.getDeltaMovement()), custom.getDeltaMovement(), "travel velocity " + down + " " + effect);
+        near(toWorld(frame, vanilla.position().subtract(vanillaBefore)),
                 custom.position().subtract(customBefore), "travel displacement " + down);
         check(custom.relativeCalls == 1 && custom.moveCalls == 1, "one native movement helper/move");
-        check(!GravityEntityAccess.cast(custom).gravityengine$gravityComponent().runtime().isInMove(), "travel scope closes");
+        check(!GravityEntityAccess.cast(custom).gravityengine$gravityComponent().operationState().isInMove(), "travel scope closes");
         check(Math.abs(custom.moveDist - vanilla.moveDist) < 1e-6, "native movement emission distance " + down);
         check(Math.abs(custom.walkDist - vanilla.walkDist) < 1e-6, "native walk distance " + down);
         check(Math.abs(custom.walkAnimation.speed() - vanilla.walkAnimation.speed()) < 1e-6,
@@ -173,12 +214,17 @@ public final class ControlBoundaryChecks {
     }
 
     private static void jump(ServerLevel level, Vec3 down) {
-        GravityFrame frame = GravityFrame.fromDown(down, .08);
+        GravityFrame frame = frameFromDown(down);
         CheckPlayer player = player(level, frame);
-        player.setDeltaMovement(frame.localToWorld(new Vec3(.2, 2, -.3)));
+        player.setDeltaMovement(
+                toWorld(frame, new Vec3(.2, 2, -.3))
+        );
         player.jumpFromGround();
-        Vec3 result = frame.worldToLocal(player.getDeltaMovement());
-        near(new Vec3(.2, GravityLivingAccess.cast(player).gravityengine$getJumpPower(), -.3), result,
+        Vec3d result = toLocal(
+                frame,
+                player.getDeltaMovement()
+        );
+        near(new Vec3d(.2, GravityLivingAccess.cast(player).gravityengine$getJumpPower(), -.3), result,
                 "native jump replaces upward velocity");
         check(player.jumpEvents == 1, "native accepted jump callback once");
         player.power = 0;
@@ -192,24 +238,39 @@ public final class ControlBoundaryChecks {
         player.setYRot(37);
         player.setDeltaMovement(Vec3.ZERO);
         player.jumpFromGround();
-        Vec3 sprint = player.getDeltaMovement().subtract(frame.up().scale(player.power));
-        check(Math.abs(sprint.dot(frame.up())) < 1.0E-7, "sprint jump is reference tangent");
+        Vec3 sprint = player.getDeltaMovement().subtract(
+                MinecraftMathAdapter.toMinecraft(frame.up())
+                        .scale(player.power)
+        );
+        Vec3d sprintValue =
+                MinecraftMathAdapter.toVec3d(sprint);
+        check(Math.abs(sprintValue.dot(frame.up())) < 1.0E-7, "sprint jump is reference tangent");
         check(Math.abs(sprint.length() - .2) < 1.0E-5, "native sprint impulse magnitude");
         var look = cc.sighs.gravityengine.look.PlayerLookIntegration.capture(player, frame);
         var heading = cc.sighs.gravityengine.gravity.movement.GravityPhysics.tangentForward(
-                look.forward(), frame, look.zeroPitchForward());
-        check(sprint.normalize().dot(heading) > .999999, "sprint follows semantic view");
+                look.forward(),
+                frame,
+                look.zeroPitchForward()
+        );
+        check(sprintValue.normalized().dot(heading) > .999999, "sprint follows semantic view");
         check(player.jumpEvents == 2, "native sprint jump callback once");
     }
 
     private static void supportFriction(ServerLevel level, Vec3 down, BlockState material) {
-        GravityFrame frame = GravityFrame.fromDown(down, .08);
+        GravityFrame frame = frameFromDown(down);
         Vec3 center = new Vec3(8.5, 299.5, 8.5);
         var original = new java.util.HashMap<BlockPos, BlockState>();
         try {
             for (int x = -2; x <= 2; x++) {
                 for (int z = -2; z <= 2; z++) {
-                    BlockPos pos = BlockPos.containing(center.add(frame.localToWorld(new Vec3(x, 0, z))));
+                    BlockPos pos = BlockPos.containing(
+                            center.add(
+                                    toWorld(
+                                            frame,
+                                            new Vec3(x, 0, z)
+                                    )
+                            )
+                    );
                     original.put(pos, level.getBlockState(pos));
                     level.setBlock(pos, material, 18);
                 }
@@ -223,12 +284,20 @@ public final class ControlBoundaryChecks {
             check(player.onGround(), "native move commits non-Y grounding " + down);
             check(GravityEntityAccess.cast(player).gravityengine$getVanillaSupportingBlock().isPresent(),
                     "native move publishes exact support material " + down);
-            player.setDeltaMovement(frame.localToWorld(new Vec3(.12, -.01, .2)));
+            player.setDeltaMovement(
+                    toWorld(
+                            frame,
+                            new Vec3(.12, -.01, .2)
+                    )
+            );
             Vec3 beforeFrictionMove = player.position();
             player.travel(Vec3.ZERO);
             double friction = material.getBlock().getFriction() * .91F;
-            Vec3 local = frame.worldToLocal(player.getDeltaMovement());
-            near(new Vec3(.12 * friction, down.equals(GravityState.DEFAULT_DOWN) ? -.08*.98F : 0, .2 * friction), local,
+            Vec3d local = toLocal(
+                    frame,
+                    player.getDeltaMovement()
+            );
+            near(new Vec3d(.12 * friction, isDefaultDown(down) ? -.08*.98F : 0, .2 * friction), local,
                     "native friction consumes captured support " + down + " " + material
                             + " before=" + beforeFrictionMove + " after=" + player.position()
                             + " result=" + player.fallResult);
@@ -248,7 +317,7 @@ public final class ControlBoundaryChecks {
                 level.setBlock(pos, Blocks.STONE.defaultBlockState(), 18);
             }
             for (Vec3 down : new Vec3[]{new Vec3(0,-.8,-.6), new Vec3(0,-.99367,-.11237).normalize()}) {
-                var frame = GravityFrame.fromDown(down, .08);
+                var frame = frameFromDown(down);
                 var actor = player(level, frame);
                 var geometry = cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.characterBodyAtCenter(
                         actor.getBbWidth(), actor.getBbHeight(), Vec3.ZERO, frame.up());
@@ -272,7 +341,13 @@ public final class ControlBoundaryChecks {
                 }
             }
             double upDot = .014732121;
-            var steep = GravityFrame.fromDown(new Vec3(-Math.sqrt(1-upDot*upDot),-upDot,0), .08);
+            var steep = frameFromDown(
+                    new Vec3(
+                            -Math.sqrt(1-upDot*upDot),
+                            -upDot,
+                            0
+                    )
+            );
             var actor = player(level, steep);
             var body = cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.characterBodyAtCenter(
                     actor.getBbWidth(), actor.getBbHeight(), Vec3.ZERO, steep.up());
@@ -321,14 +396,25 @@ public final class ControlBoundaryChecks {
     }
 
     private static void elytra(ServerLevel level, Vec3 down) {
-        var frame = GravityFrame.fromDown(down, .08);
+        var frame = frameFromDown(down);
         var player = player(level, frame);
         player.beginElytra();
-        player.setDeltaMovement(frame.localToWorld(new Vec3(.12, -.23, .31)));
+        player.setDeltaMovement(
+                toWorld(
+                        frame,
+                        new Vec3(.12, -.23, .31)
+                )
+        );
         player.fallDistance = 4;
-        Vec3 expected = cc.sighs.gravityengine.gravity.movement.ElytraAerodynamics.step(
-                player.getDeltaMovement(), cc.sighs.gravityengine.look.PlayerLookIntegration.capture(player, frame).forward(),
-                frame.up(), down.scale(.08), false);
+        Vec3 expected = MinecraftMathAdapter.toMinecraft(
+                cc.sighs.gravityengine.gravity.movement.ElytraAerodynamics.step(
+                        MinecraftMathAdapter.toVec3d(player.getDeltaMovement()),
+                        cc.sighs.gravityengine.look.PlayerLookIntegration
+                                .capture(player, frame).forward(),
+                        frame.up(),
+                        MinecraftMathAdapter.toVec3d(down.scale(.08)),
+                        false
+                ));
         Vec3 before = player.position();
         player.travel(Vec3.ZERO);
         near(expected, player.getDeltaMovement(), "native Elytra commits custom aerodynamics");
@@ -346,18 +432,39 @@ public final class ControlBoundaryChecks {
             @Override public void send(net.minecraft.network.protocol.Packet<?> packet,
                     net.minecraft.network.PacketSendListener listener) {}
         };
-        player.connection = new net.minecraft.server.network.ServerGamePacketListenerImpl(level.getServer(), connection,
+        var listener = new net.minecraft.server.network.ServerGamePacketListenerImpl(level.getServer(), connection,
                 player, net.minecraft.server.network.CommonListenerCookie.createInitial(profile, false)) {
             @Override public void send(net.minecraft.network.protocol.Packet<?> packet) { sent.add(packet); }
         };
+        /*
+         * Install the fixture geometry while the synthetic player is still
+         * non-networked. Production networked players may only change body at
+         * PlayerBodyHandoff's completed connection-tick boundary; the packet
+         * fixture below exercises that already-installed body.
+         */
         player.setPos(8, 300, 8);
-        cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator.applyDirectAssignment(player,
-                new GravityState(new Vec3(1, 0, 0), .001));
+        player.connection = null;
+        try {
+            cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator.applyDirectAssignment(player,
+                    new GravityState(new Vec3d(1, 0, 0), .001));
+            cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator.updateBody(player);
+        } finally {
+            player.connection = listener;
+        }
+        level.addNewPlayer(player);
+        check(
+                GravityEntityAccess.cast(player)
+                        .gravityengine$gravityComponent()
+                        .operationState()
+                        .geometryReferenceFrame() != null,
+                "packet fixture installs custom reference geometry"
+        );
         player.setSprinting(true);
         var component = cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime.Access.component(player);
         var config = cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime.Config.server().generation();
         var q = cc.sighs.gravityengine.math.geometry.BodyOrientation3d.quaternion(
-                GravityFrame.fromDown(new Vec3(1, 0, 0), .08).orientation());
+                frameFromDown(new Vec3(1, 0, 0)).orientation()
+        );
         Vec3 before = player.position();
         int tick = player.tickCount;
         var first = new cc.sighs.gravityengine.network.ServerboundBodyAttitudeStatePayload(level.dimension().location(),
@@ -366,7 +473,11 @@ public final class ControlBoundaryChecks {
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership.ACTIVE,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason.NONE,
                 q,
-                new org.joml.Quaterniond(q).rotateY(-Math.toRadians(10)).rotateX(Math.toRadians(20)),
+                q.multiply(
+                        Quatd.rotationY(-Math.toRadians(10))
+                ).multiply(
+                        Quatd.rotationX(Math.toRadians(20))
+                ),
                 false,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeStreamEpochService.ensureServerStream(player),
                 1);
@@ -376,7 +487,11 @@ public final class ControlBoundaryChecks {
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership.ACTIVE,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason.NONE,
                 q,
-                new org.joml.Quaterniond(q).rotateY(-Math.toRadians(30)).rotateX(Math.toRadians(40)),
+                q.multiply(
+                        Quatd.rotationY(-Math.toRadians(30))
+                ).multiply(
+                        Quatd.rotationX(Math.toRadians(40))
+                ),
                 false,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeStreamEpochService.ensureServerStream(player),
                 2);
@@ -388,12 +503,17 @@ public final class ControlBoundaryChecks {
         var walkStat = net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.SPRINT_ONE_CM);
         int previousWalk = player.getStats().getValue(walkStat);
         player.setOnGround(true);
-        Vec3 tangentWalk = GravityFrame.fromDown(new Vec3(1, 0, 0), .08).localToWorld(new Vec3(1, 0, 0));
-        player.checkMovementStatistics(tangentWalk.x, tangentWalk.y, tangentWalk.z);
+        Vec3d tangentWalk =
+                frameFromDown(new Vec3(1, 0, 0))
+                        .localToWorld(new Vec3d(0, 0, 1));
+        player.checkMovementStatistics(
+                tangentWalk.x(),
+                tangentWalk.y(),
+                tangentWalk.z()
+        );
         check(player.getStats().getValue(walkStat) == previousWalk + 100, "native sprint statistics count non-Y tangent travel");
         player.setOnGround(false);
         long lastBodySequence = attitudeOverlap(level, player, q, config, sent, second.stateSequence());
-        level.addNewPlayer(player);
         var packet = new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Pos(
                 before.x, before.y, before.z + .1, true);
         player.connection.handleMovePlayer(packet);
@@ -414,7 +534,7 @@ public final class ControlBoundaryChecks {
         boolean blockedCorrected = player.position().distanceTo(acceptedPosition) <= 1.0E-6;
         check(blockedAccepted || blockedCorrected, "blocked packet commits a Vanilla outcome only");
         check(player.validationMoves == 2, "one production move for the blocked packet; no second packet solve");
-        check(GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime()
+        check(GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState()
                         .lastCommittedMovementGroundContinuity(level.getGameTime()).isEmpty()
                         || blockedAccepted,
                 "a Vanilla correction invalidates the unaccepted move's ground continuity");
@@ -454,7 +574,7 @@ public final class ControlBoundaryChecks {
         near(noPhysicsTarget, player.position(), "noPhysics packet retains Vanilla position authority");
         check(player.validationMoves == 4 && player.onGround(), "noPhysics retains native packet ground without custom solve");
         check(cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.geometryMatchesFrame(player,
-                GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime().geometryReferenceFrame()),
+                GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState().geometryReferenceFrame()),
                 "noPhysics packet repairs exact proxy at committed P");
         player.noPhysics = false;
         Vec3 packetPosition = player.position();
@@ -471,14 +591,18 @@ public final class ControlBoundaryChecks {
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership.INACTIVE,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason.CONTROLLED_FLIGHT,
                 q,
-                new org.joml.Quaterniond(q).rotateY(-Math.toRadians(30)).rotateX(Math.toRadians(40)),
+                q.multiply(
+                        Quatd.rotationY(-Math.toRadians(30))
+                ).multiply(
+                        Quatd.rotationX(Math.toRadians(40))
+                ),
                 false,
                 second.streamEpoch(),
                 ++lastBodySequence);
         check(cc.sighs.gravityengine.network.BodyAttitudeStateReceiver.receive(player, released), "client release is installed");
         check(component.ownership() == cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership.INACTIVE,
                 "latest client state owns attitude release");
-        check(GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime().geometryReferenceFrame() != null,
+        check(GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState().geometryReferenceFrame() != null,
                 "actor suspension leaves reference geometry owned by gravity");
         near(packetPosition, player.position(), "body suspension never changes Vanilla-owned feet");
         check(player.tickCount == tick, "state acceptance and suspension execute no additional actor tick");
@@ -486,22 +610,38 @@ public final class ControlBoundaryChecks {
 
     private static void nativeMoveBranches(ServerLevel level) {
         for (var frame : new GravityFrame[]{GravityFrame.DEFAULT,
-                GravityFrame.fromDown(new Vec3(1, 0, 0), .08),
-                GravityFrame.fromDown(new Vec3(0, 1, 0), .08),
-                GravityFrame.fromDown(new Vec3(1, -2, .5).normalize(), .08)}) {
+                frameFromDown(new Vec3(1, 0, 0)),
+                frameFromDown(new Vec3(0, 1, 0)),
+                frameFromDown(new Vec3(1, -2, .5).normalize())}) {
             for (double length : new double[]{0, .0003, .0004}) {
                 var actor = player(level, frame);
                 Vec3 start = actor.position();
-                Vec3 request = frame.localToWorld(new Vec3(0, -length, 0));
+                Vec3 request = toWorld(
+                        frame,
+                        new Vec3(0, -length, 0)
+                );
                 actor.move(MoverType.SELF, request);
                 check(actor.fallCalls == 1 && (frame == GravityFrame.DEFAULT || actor.fallResult != null),
                         "ordinary move solves and runs fall even below position threshold");
-                if (actor.fallResult != null) near(request, cc.sighs.gravityengine.gravity.collision.MinecraftGeometryAdapter.toMinecraft(
+                if (actor.fallResult != null) near(request, MinecraftMathAdapter.toMinecraft(
                         actor.fallResult.resolvedMovement()), "solver keeps the small displacement");
-                near(length > .00031623 ? start.add(request) : start, actor.position(),
-                        "native position threshold is independent of solver displacement");
+                var route = cc.sighs.gravityengine.gravity.policy
+                        .GravityInfluencePolicy.collisionRoute(actor);
+                boolean customRoute =
+                        route
+                                != cc.sighs.gravityengine.gravity.model
+                                .GravityCollisionRoute.VANILLA;
+                Vec3 expectedPosition = length == 0.0D
+                        ? start
+                        : customRoute || length > .00031623D
+                        ? start.add(request)
+                        : start;
+                near(expectedPosition, actor.position(),
+                        "native position threshold is independent of solver displacement"
+                                + " length=" + length + " frame=" + frame.down()
+                                + " route=" + route);
                 check(actor.fallResult == null || actor.fallResult.supportBlock().isEmpty(), "empty small endpoint has no support");
-                var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime();
+                var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState();
                 check(cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.geometryMatchesFrame(
                         actor, runtime.geometryReferenceFrame()), "small move proxy follows actual P");
             }
@@ -514,9 +654,9 @@ public final class ControlBoundaryChecks {
                 actor.move(noPhysics ? MoverType.SELF : MoverType.PISTON, request);
                 near(start.add(request), actor.position(), "native early-return translation");
                 check(actor.fallCalls == 0 && actor.onGround(), "early return preserves native ground/fall");
-                check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime().isInMove(),
+                check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState().isInMove(),
                         "early return closes operation");
-                var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime();
+                var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState();
                 check(cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.geometryMatchesFrame(
                         actor, runtime.geometryReferenceFrame()), "early return proxy follows actual P");
             }
@@ -529,7 +669,7 @@ public final class ControlBoundaryChecks {
         actor.move(MoverType.SELF, new Vec3(0, -.1, 0));
         check(actor.fallCalls == 2, "nested native move executes its own fall callback");
         check(actor.parentResultRestored, "callback move cannot replace parent collision result");
-        check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime().isInMove(),
+        check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState().isInMove(),
                 "nested native move closes both scopes");
     }
 
@@ -556,7 +696,7 @@ public final class ControlBoundaryChecks {
                 check(block.calls.equals(throwing ? java.util.List.of("fall") : java.util.List.of("fall", "step")),
                         "native fall-on runs once before step-on; exception stops subsequent callbacks");
                 near(new Vec3(.2, .3, .4), actor.getDeltaMovement(), "callback world velocity survives response/unwind");
-                check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime().isInMove(),
+                check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState().isInMove(),
                         "throwing material callback leaves no movement scope");
             }
             for (boolean throwing : new boolean[]{false, true}) {
@@ -566,7 +706,7 @@ public final class ControlBoundaryChecks {
                 var actor = new net.minecraft.world.entity.item.ItemEntity(level, 7.7, 299.5, 8.5,
                         new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.STONE));
                 cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator.applyDirectAssignment(
-                        actor, new GravityState(new Vec3(1, 0, 0), .08));
+                        actor, new GravityState(new Vec3d(1, 0, 0), .08));
                 var impact = new Vec3(.5, .1, .1);
                 actor.setDeltaMovement(impact);
                 RuntimeException caught = null;
@@ -577,7 +717,7 @@ public final class ControlBoundaryChecks {
                 check(block.calls.equals(throwing ? java.util.List.of("fall") : java.util.List.of("fall", "step")),
                         "passive native callback order and count");
                 near(block.outputVelocity, actor.getDeltaMovement(), "passive callback world velocity survives response/unwind");
-                check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime().isInMove(),
+                check(!GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState().isInMove(),
                         "passive exception leaves no movement scope");
             }
             block.throwing = false;
@@ -617,7 +757,10 @@ public final class ControlBoundaryChecks {
 
     private static void callbackDiscontinuity(ServerLevel level) {
         for (boolean travel : new boolean[]{false, true}) {
-            var player = player(level, GravityFrame.fromDown(new Vec3(1,0,0),.08));
+            var player = player(
+                    level,
+                    frameFromDown(new Vec3(1,0,0))
+            );
             var destination = player.position().add(4,2,3);
             player.callbackDestination = destination;
             var velocity = new Vec3(.123,.234,.345);
@@ -627,7 +770,7 @@ public final class ControlBoundaryChecks {
             check(player.callbackCompleted, "teleporting fall callback completes normally");
             near(destination, player.position(), "discontinuity wins over old movement endpoint");
             near(velocity, player.getDeltaMovement(), "old movement/travel cannot overwrite callback velocity");
-            var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime();
+            var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState();
             check(!runtime.isInMove(), "superseded scopes unwind");
             check(cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.geometryMatchesFrame(
                     player, runtime.geometryReferenceFrame()), "destination exact geometry rebuilt after unwind");
@@ -636,22 +779,30 @@ public final class ControlBoundaryChecks {
     }
 
     private static void nativeBounce(ServerLevel level, Vec3 down) {
-        var frame = GravityFrame.fromDown(down,.08);
+        var frame = frameFromDown(down);
         var stepping = player(level, frame);
         for (double vertical : new double[]{.05, .2}) {
-            stepping.setDeltaMovement(frame.localToWorld(new Vec3(.2, vertical, .3)));
+            stepping.setDeltaMovement(
+                    toWorld(
+                            frame,
+                            new Vec3(.2, vertical, .3)
+                    )
+            );
             Blocks.SLIME_BLOCK.stepOn(level, stepping.blockPosition(), Blocks.SLIME_BLOCK.defaultBlockState(), stepping);
             double factor = vertical < .1 ? .4 + vertical * .2 : 1;
-            near(frame.localToWorld(new Vec3(.2 * factor, vertical, .3 * factor)), stepping.getDeltaMovement(),
+            near(toWorld(frame, new Vec3(.2 * factor, vertical, .3 * factor)), stepping.getDeltaMovement(),
                     "native slime tangent damping " + down + " " + vertical);
         }
         for (var block : new net.minecraft.world.level.block.Block[]{Blocks.STONE, Blocks.SLIME_BLOCK, Blocks.RED_BED}) {
             var player = player(level, frame);
-            Vec3 incoming = frame.localToWorld(new Vec3(.2,-1,.3));
+            Vec3 incoming = toWorld(
+                    frame,
+                    new Vec3(.2,-1,.3)
+            );
             player.setDeltaMovement(incoming);
             block.updateEntityAfterFallOn(level, player);
             double rebound = block == Blocks.SLIME_BLOCK ? 1 : block == Blocks.RED_BED ? (double).66F : 0;
-            near(frame.localToWorld(new Vec3(.2,rebound,.3)), player.getDeltaMovement(),
+            near(toWorld(frame, new Vec3(.2,rebound,.3)), player.getDeltaMovement(),
                     "native material response with world-space live velocity " + down + " " + block);
         }
         // Full Entity.move landing proves impact velocity survives until bounce.
@@ -670,7 +821,7 @@ public final class ControlBoundaryChecks {
     }
 
     private static void blockSpeed(ServerLevel level, Vec3 down) {
-        var frame = GravityFrame.fromDown(down, .08);
+        var frame = frameFromDown(down);
         var actor = player(level, frame);
         var current = actor.blockPosition();
         var support = current.below();
@@ -688,8 +839,18 @@ public final class ControlBoundaryChecks {
                     float expected = cell == Blocks.AIR ? Blocks.SOUL_SAND.getSpeedFactor() : cell.getSpeedFactor();
                     check(actor.speedFactor() == expected, "native current/support speed precedence " + down + " " + cell);
                     GravityEntityAccess.cast(actor).gravityengine$setVanillaSupportingBlock(null);
-                    check(actor.speedFactor() == (down.equals(GravityState.DEFAULT_DOWN) ? expected : cell.getSpeedFactor()),
-                            "support lookup follows native/default or exact/custom authority " + down + " " + cell);
+                    float expectedWithoutVanillaSupport =
+                            isDefaultDown(down) ? expected : cell.getSpeedFactor();
+                    check(actor.speedFactor() == expectedWithoutVanillaSupport,
+                            "support lookup follows native/default or exact/custom authority " + down + " " + cell
+                                    + " expected=" + expectedWithoutVanillaSupport
+                                    + " actual=" + actor.speedFactor()
+                                    + " route=" + cc.sighs.gravityengine.gravity.policy
+                                    .GravityInfluencePolicy.collisionRoute(actor)
+                                    + " customBody=" + cc.sighs.gravityengine.gravity.policy
+                                    .GravityInfluencePolicy.usesCustomBody(actor)
+                                    + " referenceDown=" + cc.sighs.gravityengine.gravity.minecraft
+                                    .GravityFrameAccess.authoritativeFrame(actor).down());
                 }
             }
         } finally {
@@ -707,13 +868,13 @@ public final class ControlBoundaryChecks {
                 saved.put(pos, level.getBlockState(pos));
                 level.setBlock(pos, Blocks.STONE.defaultBlockState(), 18);
             }
-            var actor = player(level, GravityFrame.fromDown(down, .08));
+            var actor = player(level, frameFromDown(down));
             for (int tick = 0; tick < 200; tick++) {
                 actor.tickCount++;
                 Vec3 request = new Vec3(.15, 0, .03);
                 actor.setDeltaMovement(request);
                 actor.move(MoverType.SELF, request);
-                var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().runtime();
+                var runtime = GravityEntityAccess.cast(actor).gravityengine$gravityComponent().operationState();
                 check(!runtime.isInMove() && actor.getBoundingBox().maxX <= 10.000001,
                         "native 200-tick wall closure " + down + " tick=" + tick
                                 + " position=" + actor.position() + " proxy=" + actor.getBoundingBox());
@@ -723,7 +884,10 @@ public final class ControlBoundaryChecks {
     }
 
     private static void insideBlockOccupancy(ServerLevel level) {
-        var actor = player(level, GravityFrame.fromDown(new Vec3(1,-2,.5), .08));
+        var actor = player(
+                level,
+                frameFromDown(new Vec3(1,-2,.5))
+        );
         BlockPos emptyCorner = null;
         for (double offset : new double[]{.15, .4, .65, .9}) {
             actor.setPos(8 + offset, 300 + offset, 8 + offset);
@@ -762,13 +926,13 @@ public final class ControlBoundaryChecks {
 
     /** Real ServerPlayer replication in an occupied scene, independent of collider legality. */
     private static long attitudeOverlap(ServerLevel level, net.minecraft.server.level.ServerPlayer player,
-            org.joml.Quaterniond q, long config, java.util.List<net.minecraft.network.protocol.Packet<?>> sent,
+            Quatd q, long config, java.util.List<net.minecraft.network.protocol.Packet<?>> sent,
             long sequence) {
         BlockPos obstacle = new BlockPos(7, 300, 8);
         var saved = level.getBlockState(obstacle);
         level.setBlock(obstacle, Blocks.STONE.defaultBlockState(), 18);
         try {
-            var frame = ((GravityEntityAccess) player).gravityengine$gravityComponent().runtime().geometryReferenceFrame();
+            var frame = ((GravityEntityAccess) player).gravityengine$gravityComponent().operationState().geometryReferenceFrame();
             var body = cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.exactBody(player, frame);
             check(!cc.sighs.gravityengine.gravity.integration.collision.GravityCollisionEngine.noCollision(player, body),
                     "body-attitude regression begins in actual block penetration");
@@ -777,14 +941,26 @@ public final class ControlBoundaryChecks {
             int packetCount = sent.size();
             Vec3 feet = player.position();
             int tick = player.tickCount;
-            for (var orientation : java.util.List.of(q, new org.joml.Quaterniond(-q.x, -q.y, -q.z, -q.w))) {
+            for (var orientation : java.util.List.of(
+                    q,
+                    new Quatd(
+                            -q.x(),
+                            -q.y(),
+                            -q.z(),
+                            -q.w()
+                    )
+            )) {
                 var update = new cc.sighs.gravityengine.network.ServerboundBodyAttitudeStatePayload(level.dimension().location(),
                 config,
                 true,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership.ACTIVE,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason.NONE,
                 orientation,
-                new org.joml.Quaterniond(orientation).rotateY(-Math.toRadians(11)).rotateX(Math.toRadians(22)),
+                orientation.multiply(
+                        Quatd.rotationY(-Math.toRadians(11))
+                ).multiply(
+                        Quatd.rotationX(Math.toRadians(22))
+                ),
                 false,
                 cc.sighs.gravityengine.attitude.runtime.BodyAttitudeStreamEpochService.ensureServerStream(player),
                 ++sequence);
@@ -802,8 +978,55 @@ public final class ControlBoundaryChecks {
         }
     }
 
+    private static GravityFrame frameFromDown(Vec3 down) {
+        return GravityFrame.fromDown(
+                MinecraftMathAdapter.toVec3d(down),
+                0.08D
+        );
+    }
+
+    private static Vec3 toWorld(
+            GravityFrame frame,
+            Vec3 local
+    ) {
+        return MinecraftMathAdapter.toMinecraft(
+                frame.localToWorld(
+                        MinecraftMathAdapter.toVec3d(local)
+                )
+        );
+    }
+
+    private static Vec3d toLocal(
+            GravityFrame frame,
+            Vec3 world
+    ) {
+        return frame.worldToLocal(
+                MinecraftMathAdapter.toVec3d(world)
+        );
+    }
+
     private static void near(Vec3 expected, Vec3 actual, String message) {
         check(expected.distanceTo(actual) < 1.0E-7, message + " expected=" + expected + " actual=" + actual);
+    }
+
+    /**
+     * Cross-type vector comparison trap: {@code Vec3.equals(Vec3d)} is always
+     * false, so default-down authority must be compared in one vector domain.
+     */
+    private static boolean isDefaultDown(Vec3 down) {
+        return MinecraftMathAdapter.toVec3d(down)
+                .distanceSquared(GravityState.DEFAULT_DOWN) <= 1.0E-12D;
+    }
+
+    private static void near(
+            Vec3d expected,
+            Vec3d actual,
+            String message
+    ) {
+        check(
+                expected.distance(actual) < 1.0E-7,
+                message + " expected=" + expected + " actual=" + actual
+        );
     }
 
     private static void check(boolean condition, String message) {
@@ -814,7 +1037,10 @@ public final class ControlBoundaryChecks {
     private static void unsupportedDimensionsLifecycle(ServerLevel level) {
         var player = new CheckPlayer(level, "CapsuleDimensions");
         player.setPos(8,350,8);
-        GravityApplicationCoordinator.applyDirectAssignment(player, new GravityState(new Vec3(1,0,0),.08));
+        GravityApplicationCoordinator.applyDirectAssignment(
+                player,
+                new GravityState(new Vec3d(1,0,0), .08)
+        );
         var frame = cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess.authoritativeFrame(player);
         var dimensions = cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.dimensions(player);
         var body = cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry.exactBody(player,frame);
@@ -846,15 +1072,18 @@ public final class ControlBoundaryChecks {
         spider.setPos(8,350,8);
         spider.setNoAi(true);
         try {
-            GravityApplicationCoordinator.applyDirectAssignment(spider,new GravityState(new Vec3(1,0,0),.08));
+            GravityApplicationCoordinator.applyDirectAssignment(
+                    spider,
+                    new GravityState(new Vec3d(1,0,0), .08)
+            );
             var component = GravityEntityAccess.cast(spider).gravityengine$gravityComponent();
             for (int tick=0;tick<20;tick++) {
                 spider.tick();
                 GravityApplicationCoordinator.updateBody(spider);
-                check(component.appliedPlan().kind()==cc.sighs.gravityengine.gravity.model.GravityApplicationPlan.Kind.VANILLA,
+                check(component.state().appliedPlan().kind()==cc.sighs.gravityengine.gravity.model.GravityApplicationPlan.Kind.VANILLA,
                         "wide/short custom capability unavailable");
-                check(!component.hasPending(),"wide/short must not retry failed capsule installation");
-                check(component.runtime().geometryReferenceFrame()==null,"wide/short has no hidden custom collider");
+                check(!component.state().hasPending(),"wide/short must not retry failed capsule installation");
+                check(component.operationState().geometryReferenceFrame()==null,"wide/short has no hidden custom collider");
             }
         } finally { spider.discard(); }
         System.out.println("UNSUPPORTED_DIMENSIONS_LIFECYCLE_PASSED");
@@ -893,7 +1122,7 @@ public final class ControlBoundaryChecks {
         @Override protected void pushEntities() { pushCalls++; }
         @Override protected void checkFallDamage(double displacement, boolean grounded, BlockState state, BlockPos pos) {
             fallCalls++;
-            var runtime = GravityEntityAccess.cast(this).gravityengine$gravityComponent().runtime();
+            var runtime = GravityEntityAccess.cast(this).gravityengine$gravityComponent().operationState();
             fallResult = runtime.currentMoveResult();
             if (callbackMovement != null) {
                 var parentResult = fallResult;

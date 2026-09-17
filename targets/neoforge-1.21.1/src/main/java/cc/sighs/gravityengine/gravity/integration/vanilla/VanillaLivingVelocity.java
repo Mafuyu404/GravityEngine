@@ -1,8 +1,10 @@
 package cc.sighs.gravityengine.gravity.integration.vanilla;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import cc.sighs.gravityengine.gravity.runtime.RestingContactSnapshot;
 import net.minecraft.world.entity.LivingEntity;
@@ -90,17 +92,23 @@ public final class VanillaLivingVelocity {
             return vanillaCleaned;
         }
 
-        Vec3 local =
-                frame.worldToLocal(worldVelocity);
-
-        Vec3 cleanedLocal =
-                new Vec3(
-                        cleanComponent(local.x),
-                        cleanComponent(local.y),
-                        cleanComponent(local.z)
+        Vec3d local =
+                frame.worldToLocal(
+                        MinecraftMathAdapter.toVec3d(
+                                worldVelocity
+                        )
                 );
 
-        return frame.localToWorld(cleanedLocal);
+        Vec3d cleanedLocal =
+                new Vec3d(
+                        cleanComponent(local.x()),
+                        cleanComponent(local.y()),
+                        cleanComponent(local.z())
+                );
+
+        return MinecraftMathAdapter.toMinecraft(
+                frame.localToWorld(cleanedLocal)
+        );
     }
 
     /**
@@ -130,10 +138,14 @@ public final class VanillaLivingVelocity {
             RestingContactSnapshot support
     ) {
         Vec3 normal =
-                support.normal();
+                MinecraftMathAdapter.toMinecraft(
+                        support.normal()
+                );
 
         Vec3 surfaceVelocity =
-                support.surfaceVelocity();
+                MinecraftMathAdapter.toMinecraft(
+                        support.surfaceVelocity()
+                );
 
         double beforeNormal =
                 before.subtract(surfaceVelocity)
@@ -169,7 +181,7 @@ public final class VanillaLivingVelocity {
     ) {
         RestingContactSnapshot support =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime()
+                        .gravityengine$gravityComponent().operationState()
                         .restingContactSnapshot();
 
         if (support == null) {

@@ -1,40 +1,42 @@
 package cc.sighs.gravityengine.gravity.field;
 
-import cc.sighs.gravityengine.gravity.model.GravityFieldKey;
-import net.minecraft.resources.ResourceKey;
+import cc.sighs.gravityengine.gravity.model.GravityFieldId;
 import net.minecraft.world.level.Level;
-import org.joml.Vector3dc;
 
-import java.util.*;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.Objects;
 
 /**
- * Level-instance-local runtime owner of generic gravity fields.
+ * Minecraft-side level-scope owner of the loader-neutral
+ * {@link GravityFieldRegistry}.
  *
- * <p>This is the lifecycle authority for every {@link GravityFieldInstance},
- * regardless of producer. Block-backed gravity cores register their
- * mathematical field and deterministic key directly here; there is no
- * separate source registry.</p>
+ * <p>This type owns exactly one Minecraft concern: the identity of the
+ * {@link Level} that a registry belongs to, plus the level lifecycle that
+ * creates and destroys it. Registration, revision monotonicity, spatial
+ * indexing and composition all belong to the common registry; nothing about
+ * field mathematics or field lifecycle policy lives here.</p>
  *
- * <p>The runtime wrapper owns only Level lifecycle. Mathematical evaluation and
- * spatial indexing remain inside the field domain.</p>
+ * <p>The level/dimension handle is therefore a lifecycle key in this target
+ * map and is never stored inside the common domain state.</p>
  */
 public final class GravityFieldRuntime {
     private static final Map<Level, GravityFieldRuntime> INSTANCES =
             new IdentityHashMap<>();
 
-    private final ResourceKey<Level> dimension;
-    private final GravityFieldIndex index;
+    private final GravityFieldRegistry registry =
+            new GravityFieldRegistry();
 
-    private GravityFieldRuntime(Level level) {
-        Objects.requireNonNull(level, "level");
-        this.dimension = level.dimension();
-        this.index = new GravityFieldIndex(this.dimension);
+    private GravityFieldRuntime() {
     }
 
     public static GravityFieldRuntime get(Level level) {
         Objects.requireNonNull(level, "level");
         synchronized (INSTANCES) {
-            return INSTANCES.computeIfAbsent(level, GravityFieldRuntime::new);
+            return INSTANCES.computeIfAbsent(
+                    level,
+                    ignored -> new GravityFieldRuntime()
+            );
         }
     }
 
@@ -61,82 +63,49 @@ public final class GravityFieldRuntime {
     }
 
     /** Removes one field without constructing a runtime during unload. */
-    public static boolean remove(Level level, GravityFieldKey key) {
+    public static boolean remove(Level level, GravityFieldId id) {
         Objects.requireNonNull(level, "level");
-        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(id, "id");
         GravityFieldRuntime runtime;
         synchronized (INSTANCES) {
             runtime = INSTANCES.get(level);
         }
-        return runtime != null && runtime.remove(key);
+        return runtime != null && runtime.registry.remove(id);
     }
 
     /**
      * Revision-aware removal without constructing a runtime during unload.
      *
-     * <p>Used by the block lifecycle adapter so a stale owner cannot remove a
-     * newer accepted instance of the same key.</p>
+     * <p>Used by the publication lease so a stale owner cannot remove a newer
+     * accepted instance of the same id.</p>
      */
     public static boolean remove(
             Level level,
-            GravityFieldKey key,
+            GravityFieldId id,
             long expectedRevision
     ) {
         Objects.requireNonNull(level, "level");
-        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(id, "id");
         GravityFieldRuntime runtime;
         synchronized (INSTANCES) {
             runtime = INSTANCES.get(level);
         }
         return runtime != null
-                && runtime.remove(key, expectedRevision);
-    }
-
-    public ResourceKey<Level> dimension() {
-        return this.dimension;
-    }
-
-    public boolean put(GravityFieldInstance instance) {
-        Objects.requireNonNull(instance, "instance");
-        return this.index.put(instance);
-    }
-
-    public boolean remove(GravityFieldKey key) {
-        Objects.requireNonNull(key, "key");
-        return this.index.remove(key);
+                && runtime.registry.remove(id, expectedRevision);
     }
 
     /**
-     * Removes the registered instance only while it still matches the
-     * requesting revision.
+     * The loader-neutral registration authority for this level.
+     *
+     * <p>Minecraft-facing callers convert their platform values at this
+     * boundary and then use only the common registry; physics and composition
+     * code never receives a {@link Level}.</p>
      */
-    public boolean remove(
-            GravityFieldKey key,
-            long expectedRevision
-    ) {
-        Objects.requireNonNull(key, "key");
-        return this.index.remove(key, expectedRevision);
+    public GravityFieldRegistry registry() {
+        return this.registry;
     }
 
-    public Optional<GravityFieldInstance> get(GravityFieldKey key) {
-        Objects.requireNonNull(key, "key");
-        return this.index.get(key);
-    }
-
-    public List<GravityFieldInstance> query(Vector3dc position) {
-        Objects.requireNonNull(position, "position");
-        return this.index.query(position);
-    }
-
-    public List<GravityFieldInstance> allInstances() {
-        return this.index.allInstances();
-    }
-
-    public int size() {
-        return this.index.size();
-    }
-
-    public void clear() {
-        this.index.clear();
+    private void clear() {
+        this.registry.clear();
     }
 }

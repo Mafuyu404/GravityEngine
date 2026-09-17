@@ -5,7 +5,7 @@ import cc.sighs.gravityengine.attitude.BodyAttitudeInput;
 import cc.sighs.gravityengine.attitude.BodyRelativeViewState;
 import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeComponent;
 import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeContinuity;
-import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeService;
 
 /** Display-only interval for the roll accepted by one local tick. Never transported or persisted. */
 record LocalControllerRoll(BodyRelativeViewState endpoint, long step, long lifecycle, long stream, double radians) {
@@ -19,7 +19,7 @@ record LocalControllerRoll(BodyRelativeViewState endpoint, long step, long lifec
                 || before.authoritativeStreamEpoch() != after.authoritativeStreamEpoch()) return null;
         return new LocalControllerRoll(after.view(), after.lastLocalSimulationStep(), after.lifecycleEpoch(),
                 after.authoritativeStreamEpoch(), input.rollAxis() * config.controllerRollRateRadiansPerSecond()
-                * BodyAttitudeRuntime.Service.GAME_TICK_SECONDS);
+                * BodyAttitudeService.GAME_TICK_SECONDS);
     }
 
     double radiansAt(BodyAttitudeComponent.RenderableSnapshot snapshot, long actorStep) {

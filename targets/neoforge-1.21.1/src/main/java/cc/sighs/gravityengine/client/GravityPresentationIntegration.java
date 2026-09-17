@@ -3,12 +3,12 @@ package cc.sighs.gravityengine.client;
 import cc.sighs.gravityengine.attitude.AttitudeSpaceTransform;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.debug.PlayerViewDebugLog;
-import cc.sighs.gravityengine.gravity.collision.MinecraftGeometryAdapter;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.OrientedBox;
 import cc.sighs.gravityengine.gravity.look.GravityLocalLook;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Camera;
@@ -139,7 +139,7 @@ public final class GravityPresentationIntegration {
                                 eventPitch);
                 AttitudeSpaceTransform.LocalLookAngles local =
                         cameraLook.finalLocalLook();
-                if (PlayerViewDebugLog.ENABLED) PlayerViewDebugLog.event(player, "camera-attitude-resolve",
+                if (PlayerViewDebugLog.shouldLog(player)) PlayerViewDebugLog.event(player, "camera-attitude-resolve",
                         "partialTick=%s eventYaw=%s eventPitch=%s eventRoll=%s qDisplay=%s playerLook=%s cameraLook=%s",
                         partialTick, eventYaw, eventPitch, roll, attitude.worldFromBody(), playerLook, cameraLook);
                 return GravityCameraOrientationInstaller.computeAttitude(
@@ -151,7 +151,7 @@ public final class GravityPresentationIntegration {
             }
         }
         var gravity = snapshot(entity, partialTick);
-        if (PlayerViewDebugLog.ENABLED) PlayerViewDebugLog.event(entity, "camera-gravity-resolve",
+        if (PlayerViewDebugLog.shouldLog(entity)) PlayerViewDebugLog.event(entity, "camera-gravity-resolve",
                 "partialTick=%s eventYaw=%s eventPitch=%s eventRoll=%s gravity=%s",
                 partialTick, eventYaw, eventPitch, roll, gravity);
         return GravityCameraOrientationInstaller.compute(
@@ -377,11 +377,13 @@ public final class GravityPresentationIntegration {
             float viewXRot
     ) {
         Objects.requireNonNull(snapshot, "snapshot");
-        return GravityLocalLook.toWorld(
+        return MinecraftMathAdapter.toMinecraft(
+                GravityLocalLook.toWorld(
                 snapshot.frame(),
                 viewYRot,
                 viewXRot
-        ).forward();
+                ).forward()
+        );
     }
 
     static CollisionBody body(
@@ -390,8 +392,9 @@ public final class GravityPresentationIntegration {
     ) {
         Objects.requireNonNull(snapshot, "snapshot");
         return OrientedBox.fromDimensions(
-                MinecraftGeometryAdapter.toJoml(
-                        snapshot.center(), new org.joml.Vector3d()),
+                MinecraftMathAdapter.toVec3d(
+                        snapshot.center()
+                ),
                 dimensions.width(),
                 dimensions.height(),
                 snapshot.frame().orientation()

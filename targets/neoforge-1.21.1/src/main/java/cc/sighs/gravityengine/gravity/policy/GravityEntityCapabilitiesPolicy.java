@@ -1,8 +1,8 @@
 package cc.sighs.gravityengine.gravity.policy;
 
-import cc.sighs.gravityengine.gravity.model.*;
-import cc.sighs.gravityengine.gravity.minecraft.geometry.CharacterDimensionPolicy;
+import cc.sighs.gravityengine.gravity.kinematic.geometry.CharacterDimensionPolicy;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.model.GravityEntityCapabilities;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.FlyingMob;
@@ -18,11 +18,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.entity.monster.Shulker;
 import net.minecraft.world.entity.monster.Vex;
-import net.minecraft.world.entity.projectile.AbstractArrow;
-import net.minecraft.world.entity.projectile.FishingHook;
-import net.minecraft.world.entity.projectile.LlamaSpit;
-import net.minecraft.world.entity.projectile.Projectile;
-import net.minecraft.world.entity.projectile.ThrowableProjectile;
+import net.minecraft.world.entity.projectile.*;
 
 /** Classifies entity-kind capability without consulting field presence. */
 public final class GravityEntityCapabilitiesPolicy {

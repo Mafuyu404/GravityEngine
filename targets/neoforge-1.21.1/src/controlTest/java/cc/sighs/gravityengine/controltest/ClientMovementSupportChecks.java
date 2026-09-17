@@ -2,15 +2,16 @@ package cc.sighs.gravityengine.controltest;
 
 import cc.sighs.gravityengine.gravity.GravityState;
 import cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator;
-import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
-
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.network.GravitySyncService;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
+
 import java.util.concurrent.CompletableFuture;
 
 /** Real key states and LocalPlayer ticks in the isolated control-test world.
@@ -48,7 +49,13 @@ final class ClientMovementSupportChecks {
                     player.serverLevel().setBlock(new BlockPos(cx+x,299,8+z), Blocks.STONE.defaultBlockState(),3);
                 player.setDeltaMovement(Vec3.ZERO);
                 player.connection.teleport(cx,350,8.5,0,0);
-                GravityApplicationCoordinator.applyDirectAssignment(player,new GravityState(down,.08));
+                GravityApplicationCoordinator.applyDirectAssignment(
+                        player,
+                        new GravityState(
+                                MinecraftMathAdapter.toVec3d(down),
+                                .08
+                        )
+                );
                 GravitySyncService.syncPlayer(player);
                 player.connection.resumeFlushing();
             }, mc.getSingleplayerServer());
@@ -67,7 +74,14 @@ final class ClientMovementSupportChecks {
             setup = CompletableFuture.runAsync(() -> {
                 var player = mc.getSingleplayerServer().getPlayerList().getPlayer(id);
                 var frame = GravityFrameAccess.authoritativeFrame(player);
-                check(frame.down().distanceTo(DOWN[phase]) < 1e-9,"assignment ready");
+                check(
+                        frame.down().distance(
+                                MinecraftMathAdapter.toVec3d(
+                                        DOWN[phase]
+                                )
+                        ) < 1e-9,
+                        "assignment ready"
+                );
                 var destination = new Vec3(cx,300,8.5);
                 var body = GravityEntityGeometry.candidateBody(GravityEntityGeometry.dimensions(player),destination,frame.up());
                 destination = destination.add(0,300-body.enclosingAabb().minY(),0);
@@ -78,7 +92,7 @@ final class ClientMovementSupportChecks {
             return false;
         }
         var player = mc.player;
-        var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().runtime();
+        var runtime = GravityEntityAccess.cast(player).gravityengine$gravityComponent().operationState();
         var frame = GravityFrameAccess.authoritativeFrame(player);
         if (phase == 2) {
             if (ticks < 25) return false;
@@ -99,7 +113,13 @@ final class ClientMovementSupportChecks {
         mc.options.keyLeft.setDown(ticks < 85);
         check(player.onGround(),"stable foot support through tangential movement P=" + player.position());
         check(runtime.restingContactSnapshot() != null,"stable terminal face retained");
-        double speed = Math.abs(frame.worldToLocal(player.getDeltaMovement()).x);
+        double speed = Math.abs(
+                frame.worldToLocal(
+                        MinecraftMathAdapter.toVec3d(
+                                player.getDeltaMovement()
+                        )
+                ).x()
+        );
         if (ticks >= 86 && ticks <= 91 && previousSpeed > .006) {
             double ratio = speed / previousSpeed;
             check(Math.abs(ratio - .6F*.91F) < .002,"released-input damping=" + ratio);

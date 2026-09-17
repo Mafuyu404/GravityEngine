@@ -5,7 +5,8 @@ import cc.sighs.gravityengine.gravity.GravityState;
 import cc.sighs.gravityengine.gravity.collision.GravityMoveResult;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 
@@ -29,8 +30,8 @@ public final class GravityFrameAccess {
         var component = GravityEntityAccess.cast(entity)
                 .gravityengine$gravityComponent();
         return resolve(
-                component.runtime(),
-                component.appliedState(),
+                component.operationState(),
+                component.state().appliedState(),
                 GravityEntityGeometry.proxyCenter(entity)
         );
     }
@@ -41,7 +42,7 @@ public final class GravityFrameAccess {
      * completed frame is re-expressed on the installed axis.
      */
     private static GravityFrame resolve(
-            GravityRuntimeState runtime,
+            GravityOperationState runtime,
             GravityState initialState,
             Vec3 initialSamplePoint
     ) {
@@ -53,7 +54,12 @@ public final class GravityFrameAccess {
 
         GravityFrame evidence = runtime.lastCompletedFrame();
         if (evidence == null) {
-            evidence = GravityFrame.fromState(initialState, initialSamplePoint);
+            evidence = GravityFrame.fromState(
+                    initialState,
+                    MinecraftMathAdapter.toVec3d(
+                            initialSamplePoint
+                    )
+            );
         }
         return runtime.installedCollisionUp() == null
                 ? evidence
@@ -71,9 +77,9 @@ public final class GravityFrameAccess {
      */
     public static GravityFrame reliableFrame(Entity entity) {
         Objects.requireNonNull(entity, "entity");
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity)
+        GravityOperationState runtime = GravityEntityAccess.cast(entity)
                 .gravityengine$gravityComponent()
-                .runtime();
+                .operationState();
         GravityMoveResult result = runtime.currentMoveResult();
         if (result != null) return result.frame();
         if (runtime.isInMove()) return runtime.activeFrame();

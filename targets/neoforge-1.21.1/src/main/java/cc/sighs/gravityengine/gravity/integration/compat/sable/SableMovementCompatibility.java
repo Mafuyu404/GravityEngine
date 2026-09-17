@@ -25,13 +25,17 @@ public final class SableMovementCompatibility {
                     SableMovementCompatibility.class.getClassLoader()
             );
             return true;
-        } catch (ClassNotFoundException | LinkageError absent) {
+        } catch (ClassNotFoundException absent) {
             return false;
         }
     }
 
     public static boolean available() {
         return AVAILABLE;
+    }
+
+    public static void unload(net.minecraft.world.level.Level level) {
+        if (AVAILABLE) SableRigidCollisionProvider.unload(level);
     }
 
     /** Captures the completed SubLevel result exactly as it enters the parent solve. */

@@ -1,12 +1,12 @@
 package cc.sighs.gravityengine.attitude.persistence;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
+import cc.sighs.gravityengine.math.Quatd;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
-import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.attachment.IAttachmentHolder;
 import net.neoforged.neoforge.attachment.IAttachmentSerializer;
-import org.joml.Quaterniond;
 
 import java.util.Optional;
 
@@ -81,19 +81,19 @@ public final class BodyAttitudePersistenceSerializer
 
         tag.putInt(TAG_VERSION, FORMAT_VERSION);
 
-        Quaterniond q = seed.worldFromBody();
-        tag.putDouble(TAG_QX, q.x);
-        tag.putDouble(TAG_QY, q.y);
-        tag.putDouble(TAG_QZ, q.z);
-        tag.putDouble(TAG_QW, q.w);
+        Quatd q = seed.worldFromBody();
+        tag.putDouble(TAG_QX, q.x());
+        tag.putDouble(TAG_QY, q.y());
+        tag.putDouble(TAG_QZ, q.z());
+        tag.putDouble(TAG_QW, q.w());
 
-        Quaterniond controller = seed.worldFromController();
-        tag.putDouble(TAG_CONTROLLER_X, controller.x); tag.putDouble(TAG_CONTROLLER_Y, controller.y);
-        tag.putDouble(TAG_CONTROLLER_Z, controller.z); tag.putDouble(TAG_CONTROLLER_W, controller.w);
+        Quatd controller = seed.worldFromController();
+        tag.putDouble(TAG_CONTROLLER_X, controller.x()); tag.putDouble(TAG_CONTROLLER_Y, controller.y());
+        tag.putDouble(TAG_CONTROLLER_Z, controller.z()); tag.putDouble(TAG_CONTROLLER_W, controller.w());
         seed.elytraDynamics().ifPresent(dynamics -> {
             CompoundTag elytra = new CompoundTag();
-            Vec3 omega = dynamics.angularVelocityWorld();
-            elytra.putDouble(TAG_WX, omega.x); elytra.putDouble(TAG_WY, omega.y); elytra.putDouble(TAG_WZ, omega.z);
+            Vec3d omega = dynamics.angularVelocityWorld();
+            elytra.putDouble(TAG_WX, omega.x()); elytra.putDouble(TAG_WY, omega.y()); elytra.putDouble(TAG_WZ, omega.z());
             tag.put(TAG_ELYTRA, elytra);
         });
 
@@ -130,11 +130,11 @@ public final class BodyAttitudePersistenceSerializer
                         || !hasDouble(elytra, TAG_WX) || !hasDouble(elytra, TAG_WY) || !hasDouble(elytra, TAG_WZ))
                     return Optional.empty();
                 dynamics = Optional.of(new BodyAttitudePersistentSeed.ElytraDynamicsSeed(
-                        new Vec3(elytra.getDouble(TAG_WX), elytra.getDouble(TAG_WY), elytra.getDouble(TAG_WZ))));
+                        new Vec3d(elytra.getDouble(TAG_WX), elytra.getDouble(TAG_WY), elytra.getDouble(TAG_WZ))));
             }
             return Optional.of(new BodyAttitudePersistentSeed(
-                    new Quaterniond(tag.getDouble(TAG_QX), tag.getDouble(TAG_QY), tag.getDouble(TAG_QZ), tag.getDouble(TAG_QW)),
-                    new Quaterniond(tag.getDouble(TAG_CONTROLLER_X), tag.getDouble(TAG_CONTROLLER_Y),
+                    new Quatd(tag.getDouble(TAG_QX), tag.getDouble(TAG_QY), tag.getDouble(TAG_QZ), tag.getDouble(TAG_QW)),
+                    new Quatd(tag.getDouble(TAG_CONTROLLER_X), tag.getDouble(TAG_CONTROLLER_Y),
                             tag.getDouble(TAG_CONTROLLER_Z), tag.getDouble(TAG_CONTROLLER_W)), dynamics));
         } catch (RuntimeException malformed) {
             return Optional.empty();

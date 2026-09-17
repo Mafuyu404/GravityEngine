@@ -1,21 +1,17 @@
 package cc.sighs.gravityengine.gravity.integration;
 
-import cc.sighs.gravityengine.gravity.collision.*;
 import cc.sighs.gravityengine.gravity.GravityFrame;
-import cc.sighs.gravityengine.gravity.GravityState;
+import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
-import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
-import cc.sighs.gravityengine.gravity.model.*;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import cc.sighs.gravityengine.gravity.runtime.RestingContactSnapshot;
-import cc.sighs.gravityengine.gravity.runtime.VanillaCollisionState;
-import java.util.Objects;
-import java.util.Optional;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
+import java.util.Objects;
 
 /**
  * Position discontinuity and exact-body geometry repair integration.
@@ -138,13 +134,17 @@ public final class EntityPositionIntegration {
                 "afterPositionAnchor"
         );
 
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         if (runtime.consumeExternalSupportTransportPositionWrite(
-                beforePositionAnchor,
-                afterPositionAnchor
+                MinecraftMathAdapter.toVec3d(
+                        beforePositionAnchor
+                ),
+                MinecraftMathAdapter.toVec3d(
+                        afterPositionAnchor
+                )
         )) {
             /*
              * Explicit support transport is an owned accepted translation,
@@ -177,7 +177,9 @@ public final class EntityPositionIntegration {
                     afterPositionAnchor
             )) {
                 runtime.supersedeMovement(
-                        afterPositionAnchor
+                        MinecraftMathAdapter.toVec3d(
+                                afterPositionAnchor
+                        )
                 );
             } else if (runtime.discontinuityDestination() == null) {
                 GravityEntityGeometry.reanchorAfterVanillaTranslation(
@@ -256,9 +258,9 @@ public final class EntityPositionIntegration {
             return;
         }
 
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         if (runtime.isApplyingGeometry()) {
             return;
@@ -266,7 +268,9 @@ public final class EntityPositionIntegration {
 
         if (runtime.isInMove()) {
             runtime.supersedeMovement(
-                    afterPositionAnchor
+                    MinecraftMathAdapter.toVec3d(
+                            afterPositionAnchor
+                    )
             );
             return;
         }
@@ -320,9 +324,9 @@ public final class EntityPositionIntegration {
             Entity entity,
             Vec3 newPositionAnchor
     ) {
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+                        .gravityengine$gravityComponent().operationState();
 
         RestingContactSnapshot previousSupport =
                 runtime.restingContactSnapshot();

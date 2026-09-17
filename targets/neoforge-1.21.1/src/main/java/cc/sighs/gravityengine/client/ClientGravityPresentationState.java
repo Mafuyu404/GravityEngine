@@ -2,6 +2,9 @@ package cc.sighs.gravityengine.client;
 
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.presentation.CompletedGravityFrame;
+import cc.sighs.gravityengine.math.Quatd;
+import cc.sighs.gravityengine.math.geometry.BodyOrientation3d;
+
 import javax.annotation.Nullable;
 
 /** Client entity tick history. Publications are latest-value evidence, never animation steps. */
@@ -34,8 +37,17 @@ final class ClientGravityPresentationState {
         if (observedRevision < discontinuityRevision) return latest == null ? null : latest.frame();
         if (current == null) return latest == null ? null : latest.frame();
         if (previous == current) return current;
-        return GravityFrame.interpolateForPresentation(previous, current,
-                ClientGravityFrameSampler.sanitizePartialTick(partialTick));
+        if (previous == null) return current;
+        float t = ClientGravityFrameSampler.sanitizePartialTick(partialTick);
+        Quatd from = BodyOrientation3d.quaternion(previous.orientation());
+        Quatd to = BodyOrientation3d.quaternion(current.orientation());
+        Quatd blended = from.slerp(to, t).normalized();
+        return new GravityFrame(
+                previous.samplePoint().lerp(current.samplePoint(), t),
+                BodyOrientation3d.frame(blended),
+                previous.strength()
+                        + (current.strength() - previous.strength()) * t
+        );
     }
 
     GravityFrame previous() { return previous; }

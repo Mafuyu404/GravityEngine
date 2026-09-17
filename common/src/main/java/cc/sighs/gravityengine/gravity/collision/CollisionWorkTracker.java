@@ -21,6 +21,7 @@ public final class CollisionWorkTracker {
     private long blockShapesEvaluated;
     private int blockPrimitiveCount;
     private int obstaclesProduced;
+    private int rigidCandidatesVisited;
     private int sceneQueries;
     private int dynamicSurfaceSnapshots;
     private int worldBorderSnapshots;
@@ -109,6 +110,24 @@ public final class CollisionWorkTracker {
             return;
         }
         this.sourceSphereSnapshots++;
+    }
+
+    /**
+     * Native packet candidates, charged before filtering or publication reads.
+     * Uses maxObstaclePrimitives as a separate candidate-count ceiling.
+     */
+    public boolean recordRigidCandidate() {
+        if (this.limitExceeded) return false;
+        if (this.rigidCandidatesVisited >= this.budget.maxObstaclePrimitives()) {
+            flagLimit("maxRigidCandidates=" + this.budget.maxObstaclePrimitives());
+            return false;
+        }
+        this.rigidCandidatesVisited++;
+        return true;
+    }
+
+    public int rigidCandidatesVisited() {
+        return this.rigidCandidatesVisited;
     }
 
     public boolean recordObstacles(int count) {
@@ -225,6 +244,15 @@ public final class CollisionWorkTracker {
                 this.budget.maxNarrowPhaseTests()
                         - this.narrowPhaseTests
         );
+    }
+
+    /**
+     * Maximum accepted material-point chord count for one rotating support
+     * trajectory. The route fails closed when its required subdivision exceeds
+     * this operation budget.
+     */
+    public int maxSupportTrajectorySegments() {
+        return this.budget.maxSupportTrajectorySegments();
     }
 
     public boolean canAffordNarrowPhaseTests(int required) {

@@ -3,6 +3,9 @@ package cc.sighs.gravityengine.client;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.math.Quatd;
+import cc.sighs.gravityengine.math.geometry.BodyOrientation3d;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
@@ -21,12 +24,16 @@ public final class ClientGravityFrameSampler {
     /** Immutable quaternion components cached with a render snapshot. */
     public record CachedRotation(float x, float y, float z, float w) {
         static CachedRotation from(GravityFrame frame) {
-            Quaternionf rotation = frame.rotation();
+            Objects.requireNonNull(frame, "frame");
+
+            Quatd rotation =
+                    BodyOrientation3d.quaternion(frame.orientation());
+
             return new CachedRotation(
-                    rotation.x(),
-                    rotation.y(),
-                    rotation.z(),
-                    rotation.w()
+                    (float) rotation.x(),
+                    (float) rotation.y(),
+                    (float) rotation.z(),
+                    (float) rotation.w()
             );
         }
 
@@ -70,7 +77,8 @@ public final class ClientGravityFrameSampler {
                         "presentationHalfHeight must be finite and non-negative");
             }
             Vec3 expectedCenter = feet.add(
-                    frame.up().scale(presentationHalfHeight));
+                    MinecraftMathAdapter.toMinecraft(
+                            frame.up().multiply(presentationHalfHeight)));
             if (expectedCenter.distanceToSqr(center) > 1.0E-12D) {
                 throw new IllegalArgumentException(
                         "feet/center/frame/half-height must describe one reference-aligned character");
@@ -84,7 +92,7 @@ public final class ClientGravityFrameSampler {
     /** Samples using the entity's currently committed application state. */
     public static RenderSnapshot sample(Entity entity, float partialTick) {
         Objects.requireNonNull(entity, "entity");
-        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
+        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
         float progress = sanitizePartialTick(partialTick);
         var completed = runtime.completedPresentationFrame();
         var state = STATES.get(entity);
@@ -105,7 +113,7 @@ public final class ClientGravityFrameSampler {
 
     /** Called once after the client's entity ticks, observing only the latest operation publication. */
     static void tick(Entity entity) {
-        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
+        var runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
         STATES.computeIfAbsent(entity, ignored -> new ClientGravityPresentationState()).tick(
                 entity.tickCount, runtime.presentationRevision(),
                 runtime.lastPresentationDiscontinuityRevision(), runtime.completedPresentationFrame());
@@ -115,7 +123,9 @@ public final class ClientGravityFrameSampler {
             long tick, long revision, boolean fallback) {
         double halfHeight = height * 0.5D;
         Vec3 center = GravityEntityGeometry.bodyCenterFromPositionAnchor(positionAnchor, height);
-        return new RenderSnapshot(center.subtract(frame.up().scale(halfHeight)), center,
+        return new RenderSnapshot(center.subtract(
+                        MinecraftMathAdapter.toMinecraft(
+                                frame.up().multiply(halfHeight))), center,
                 halfHeight, frame, tick, revision, fallback, CachedRotation.from(frame));
     }
 

@@ -54,7 +54,7 @@ public abstract class LivingEntityJumpMixin {
             target = "Lnet/neoforged/neoforge/common/CommonHooks;onLivingJump(Lnet/minecraft/world/entity/LivingEntity;)V"), require = 1)
     private void gravityengine$acceptedJump(LivingEntity entity, Operation<Void> original,
             @Share("jump") LocalRef<VanillaPropulsionBridge.Jump> shared) {
-        if (shared.get() != null) LivingGravityIntegration.commitJump(entity, shared.get().before());
+        if (shared.get() != null) LivingGravityIntegration.commitJump(entity, shared.get());
         original.call(entity);
     }
 }

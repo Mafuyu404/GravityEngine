@@ -4,7 +4,7 @@ plugins {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(17)
     }
 }
 
@@ -13,10 +13,24 @@ repositories {
 }
 
 dependencies {
-    api 'org.joml:joml:1.10.5'
+    testImplementation platform(
+            'org.junit:junit-bom:5.11.4'
+    )
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    /*
+     * Test-only differential oracle. Production/common metadata must not
+     * advertise JOML as an API or runtime dependency.
+     */
+    testImplementation 'org.joml:joml:1.10.5'
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    options.release = 21
+    options.release = 17
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }

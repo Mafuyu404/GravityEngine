@@ -120,7 +120,9 @@ public abstract class LivingEntityMixin implements GravityLivingAccess {
                 GravityFrameAccess.authoritativeFrame(instance);
         SemanticLookSnapshot look =
                 PlayerLookIntegration.capture(instance, frame);
-        Vec3 semanticViewForward = look.forward();
+        Vec3 semanticViewForward =
+                cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter
+                        .toMinecraft(look.forward());
         GravityBodyTurnMath.BodyTurnInput corrected =
                 GravityBodyTurnMath.resolve(
                         instance,

@@ -1,13 +1,17 @@
 package cc.sighs.gravityengine.client;
 
-import cc.sighs.gravityengine.attitude.*;
+import cc.sighs.gravityengine.api.math.Vec3d;
+import cc.sighs.gravityengine.attitude.AttitudeSpaceTransform;
+import cc.sighs.gravityengine.attitude.BodyAttitudeConstraintKind;
+import cc.sighs.gravityengine.attitude.BodyRelativeViewState;
+import cc.sighs.gravityengine.attitude.SemanticView;
 import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.math.Quatd;
 import cc.sighs.gravityengine.network.ClientboundBodyAttitudeStatePayload;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.phys.Vec3;
-import org.joml.Quaterniond;
+
 import javax.annotation.Nullable;
-import java.util.*;
+import java.util.Objects;
 
 /** Read-only diagnostics of local control and installed remote state. No display pose or animation state. */
 public final class ClientBodyAttitudeDiagnostics {
@@ -63,7 +67,7 @@ public final class ClientBodyAttitudeDiagnostics {
                 current.authoritativeRevision(), current.streamEpoch(),
                 current.authoritativeConfigGeneration(),
                 0.0D,
-                current.worldFromBody(), Vec3.ZERO,
+                current.worldFromBody(), Vec3d.ZERO,
                 projection.localYaw(), projection.localPitch(),
                 remote.snapshotAgeTicks(),
                 ClientBodyAttitudeSync.pendingCount(), remote.lastSyncReason(),
@@ -95,8 +99,8 @@ public final class ClientBodyAttitudeDiagnostics {
             long streamEpoch,
             long configGeneration,
             double rollInput,
-            Quaterniond worldFromBody,
-            Vec3 angularVelocityWorld,
+            Quatd worldFromBody,
+            Vec3d angularVelocityWorld,
             float viewLocalYaw,
             float viewLocalPitch,
             long remoteSnapshotAgeTicks,
@@ -108,11 +112,11 @@ public final class ClientBodyAttitudeDiagnostics {
             BodyAttitudeSuspensionReason suspensionReason
     ) {
         public DebugSnapshot {
-            worldFromBody = new Quaterniond(worldFromBody);
+            worldFromBody = worldFromBody;
         }
 
-        @Override public Quaterniond worldFromBody() {
-            return new Quaterniond(worldFromBody);
+        @Override public Quatd worldFromBody() {
+            return worldFromBody;
         }
 
     }

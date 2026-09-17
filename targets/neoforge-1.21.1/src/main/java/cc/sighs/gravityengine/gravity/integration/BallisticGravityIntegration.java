@@ -1,8 +1,12 @@
 package cc.sighs.gravityengine.gravity.integration;
 
 import cc.sighs.gravityengine.gravity.acceleration.AccelerationQuery;
-import cc.sighs.gravityengine.gravity.acceleration.GravityAccelerationResolver;
+import cc.sighs.gravityengine.gravity.acceleration.GravityEvaluationService;
+import cc.sighs.gravityengine.gravity.acceleration.GravityEvaluationSnapshot;
 import cc.sighs.gravityengine.gravity.ballistic.BallisticGravityIntegrator;
+import cc.sighs.gravityengine.gravity.field.GravityFieldRuntime;
+import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.model.GravityAccelerationMode;
 import cc.sighs.gravityengine.gravity.model.GravityApplicationPlan;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
@@ -34,22 +38,78 @@ public final class BallisticGravityIntegration {
         Vec3 samplePoint = entity.getBoundingBox().getCenter();
         Vec3 velocity = entity.getDeltaMovement();
         var query = new AccelerationQuery(
-                entity,
-                samplePoint,
-                velocity,
+                MinecraftMathAdapter.toVec3d(samplePoint),
+                MinecraftMathAdapter.toVec3d(velocity),
                 entity.level().getGameTime(),
-                intervalTicks
+                intervalTicks,
+                GravityEntityAccess.cast(entity)
+                        .gravityengine$gravityComponent()
+                        .state()
+                        .appliedState()
         );
-        // The exact vanilla acceleration magnitude is owned by the wrapped
-        // call. This value is used only for the pure no-field resolution; the
-        // adapter deliberately calls vanilla instead of reconstructing it.
-        var resolution = GravityAccelerationResolver.resolve(query, plan, Vec3.ZERO);
-        if (!resolution.replacesVanilla()) {
+
+        var component = GravityEntityAccess.cast(entity)
+                .gravityengine$gravityComponent();
+        var runtime = component.operationState();
+        var registry = GravityFieldRuntime.get(entity.level())
+                .registry();
+        var evaluationContext =
+                GravityEvaluationContexts.capture(
+                        component,
+                        registry
+                );
+        var evaluationQuery = new cc.sighs.gravityengine.api.field
+                .GravityFieldQuery(
+                query.samplePoint(),
+                query.velocity(),
+                query.gameTick(),
+                query.intervalTicks()
+        );
+
+        /*
+         * One physical gravity snapshot owns this ballistic integration step.
+         * Reuse is allowed only for the exact query and committed application
+         * context; otherwise evaluate once through the plan-generic service.
+         */
+        GravityEvaluationSnapshot evaluation =
+                runtime.gravityEvaluationFor(evaluationQuery)
+                        .filter(candidate ->
+                                GravityEvaluationService.reusable(
+                                        candidate,
+                                        evaluationContext,
+                                        query
+                                ).isPresent()
+                        )
+                        .orElseGet(() ->
+                                GravityEvaluationService.evaluateForPlan(
+                                        evaluationContext,
+                                        registry,
+                                        query,
+                                        component.state()
+                                                .appliedState()
+                                                .down(),
+                                        runtime.lastCompletedFrame()
+                                )
+                        );
+        if (evaluation.committedApplication()
+                .plan()
+                .accelerationMode()
+                == GravityAccelerationMode.FIELD
+                && !evaluation.hasActiveField()) {
+            /*
+             * The wrapped vanilla call remains the owner when FIELD authority
+             * has no active contribution. Do not fabricate a replacement.
+             */
             return false;
         }
-        entity.setDeltaMovement(BallisticGravityIntegrator.integrate(
-                velocity, resolution.acceleration(), intervalTicks
-        ));
+        if (!runtime.isInMove()) {
+            runtime.publishTickEvaluation(evaluation);
+        }
+        entity.setDeltaMovement(MinecraftMathAdapter.toMinecraft(
+                BallisticGravityIntegrator.integrate(
+                        MinecraftMathAdapter.toVec3d(velocity),
+                        evaluation
+                )));
         return true;
     }
 

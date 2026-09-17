@@ -1,14 +1,11 @@
 package cc.sighs.gravityengine.gravity.integration.collision;
 
 import cc.sighs.gravityengine.gravity.GravityFrame;
-import cc.sighs.gravityengine.gravity.collision.CollisionComplexityLimitException;
-import cc.sighs.gravityengine.gravity.collision.CollisionObstacle;
-import cc.sighs.gravityengine.gravity.collision.CollisionScene;
-import cc.sighs.gravityengine.gravity.collision.CollisionSceneCoverageException;
+import cc.sighs.gravityengine.gravity.collision.*;
+import cc.sighs.gravityengine.gravity.kinematic.geometry.CharacterDimensionPolicy;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
-import cc.sighs.gravityengine.gravity.minecraft.geometry.CharacterDimensionPolicy;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.Pose;
@@ -101,7 +98,7 @@ public final class GravityPlayerPoseFitQuery {
         List<CollisionObstacle> obstacles = scene.queryPoseFit(body);
         // Touching contacts are legal; meaningful penetration (> 1e-7)
         // blocks the pose change.
-        return !GravityCollisionEngine.requiresPenetrationRecovery(
+        return !CurrentContactQuery.requiresPenetrationRecovery(
                 body, obstacles
         );
     }

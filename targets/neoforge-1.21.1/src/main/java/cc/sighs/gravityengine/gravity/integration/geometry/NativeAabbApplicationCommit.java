@@ -4,6 +4,7 @@ import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
 import cc.sighs.gravityengine.gravity.model.CommittedGravityApplication;
+import cc.sighs.gravityengine.gravity.model.GravityCollisionRoute;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
@@ -34,7 +35,7 @@ public final class NativeAabbApplicationCommit {
         if (!(entity instanceof Player)
                 || !PlayerBodyHandoff.mayChangeBody(entity)
                 || GravityInfluencePolicy.collisionRoute(entity)
-                        != GravityInfluencePolicy.CollisionRoute.VANILLA) {
+                        != GravityCollisionRoute.VANILLA) {
             return false;
         }
         GravityFrame frame = next.plan().usesCustomBody()
@@ -52,16 +53,16 @@ public final class NativeAabbApplicationCommit {
         if (!(entity instanceof Player)
                 || !isNativeApplication(next, frame)
                 || GravityInfluencePolicy.collisionRoute(entity)
-                        != GravityInfluencePolicy.CollisionRoute.VANILLA) {
+                        != GravityCollisionRoute.VANILLA) {
             throw new IllegalStateException("metadata-only commit requires native AABB on both sides");
         }
         var component = GravityEntityAccess.cast(entity).gravityengine$gravityComponent();
-        var runtime = component.runtime();
+        var runtime = component.operationState();
         if (runtime.isInMove() || runtime.isApplyingGeometry()) {
             throw new IllegalStateException("application commit inside a geometry/movement operation");
         }
         runtime.clearInfluenceTransientState();
-        component.commitApplication(next);
+        component.state().commitApplication(next);
         if (frame == null) runtime.clearInstalledCollisionAxis();
         else runtime.setInstalledCollisionAxisFromFrame(frame);
         // Intentionally no setPos/setBoundingBox/setOnGround/setDeltaMovement.

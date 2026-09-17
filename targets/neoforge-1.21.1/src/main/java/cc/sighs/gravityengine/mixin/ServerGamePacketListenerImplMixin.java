@@ -1,12 +1,14 @@
 package cc.sighs.gravityengine.mixin;
 
 import cc.sighs.gravityengine.gravity.GravityFrame;
-import cc.sighs.gravityengine.gravity.debug.PlayerViewDebugLog;
-import cc.sighs.gravityengine.gravity.integration.vanilla.VanillaBodyOccupancy;
+import cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator;
 import cc.sighs.gravityengine.gravity.integration.geometry.GravityApplicationBarrier;
+import cc.sighs.gravityengine.gravity.integration.vanilla.VanillaBodyOccupancy;
+import cc.sighs.gravityengine.gravity.integration.vanilla.RigidOccupancySnapshot;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import cc.sighs.gravityengine.gravity.runtime.MovementGroundContinuity;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
@@ -15,15 +17,14 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.llamalad7.mixinextras.sugar.Share;
 import com.llamalad7.mixinextras.sugar.ref.LocalRef;
-import net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
-import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.RelativeMovement;
-import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
@@ -33,7 +34,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import cc.sighs.gravityengine.gravity.integration.GravityApplicationCoordinator;
 
 /**
  * Arbitrary-gravity operand translation inside Vanilla's ordinary player
@@ -106,7 +106,21 @@ public abstract class ServerGamePacketListenerImplMixin {
         }
     }
 
-    /** Preserve the old geometry once, at Vanilla's old-bounds capture. */
+    /**
+     * Preserve the old geometry once, at Vanilla's old-bounds capture, and
+     * capture the single dynamic-rigid snapshot consumed by both occupancy
+     * predicates.
+     *
+     * <p>This is Vanilla's first {@code ServerPlayer.getBoundingBox()} inside
+     * {@code handleMovePlayer}. That seam is already after:
+     * {@code PacketUtils.ensureRunningOnSameThread}, the invalid-value check,
+     * horizontal/vertical clamping, the awaiting-teleport gate, the
+     * passenger/sleeping branches and the moved-too-quickly rejection; and it
+     * is before {@code jumpFromGround}, {@code player.move} and Vanilla's
+     * old/new occupancy policy. The captured requested body uses Vanilla's
+     * already-clamped {@code d0}/{@code d1}/{@code d2} operands (slots 3/5/7),
+     * never the raw packet coordinates.</p>
+     */
     @WrapOperation(
             method = "handleMovePlayer",
             at = @At(
@@ -120,13 +134,60 @@ public abstract class ServerGamePacketListenerImplMixin {
     private AABB gravityengine$captureOldBody(
             ServerPlayer actor,
             Operation<AABB> original,
-            @Share("oldExactBody") LocalRef<CollisionBody> oldBody
+            @Share("oldExactBody") LocalRef<CollisionBody> oldBody,
+            @Share("rigidOccupancySnapshot")
+            LocalRef<RigidOccupancySnapshot> snapshot,
+            @Local(index = 3) double targetX,
+            @Local(index = 5) double targetY,
+            @Local(index = 7) double targetZ
     ) {
         AABB bounds = original.call(actor);
-        oldBody.set(GravityInfluencePolicy.usesExactBodyCollision(actor)
-                ? VanillaBodyOccupancy.capturePhysicalBody(actor)
-                : null);
+        if (actor == null
+                || actor.noPhysics
+                || (!GravityInfluencePolicy.usesExactBodyCollision(actor)
+                    && !GravityInfluencePolicy.hasExternalCollisionProviders(actor))) {
+            oldBody.set(null);
+            return bounds;
+        }
+
+        CollisionBody previous =
+                VanillaBodyOccupancy.capturePhysicalBody(actor);
+        oldBody.set(previous);
+        snapshot.set(
+                RigidOccupancySnapshot.capture(
+                        actor,
+                        previous,
+                        VanillaBodyOccupancy.atRequestedPosition(
+                                previous,
+                                actor.position(),
+                                new Vec3(targetX, targetY, targetZ)
+                        )
+                )
+        );
+        if (!GravityInfluencePolicy.usesExactBodyCollision(actor)
+                && !snapshot.get().indeterminate()) {
+            var requested = VanillaBodyOccupancy.atRequestedPosition(previous, actor.position(),
+                    new Vec3(targetX, targetY, targetZ));
+            var corridor = previous.enclosingAabb().union(requested.enclosingAabb());
+            if (snapshot.get().obstacles().stream().noneMatch(obstacle ->
+                    !obstacle.providerNamespace().equals(cc.sighs.gravityengine.gravity.collision
+                            .RigidObstacleIdentity.NATIVE_PROVIDER_NAMESPACE)
+                            && obstacle.operationSweptBounds().intersects(corridor))) {
+                oldBody.set(null);
+            }
+        }
         return bounds;
+    }
+
+    /** Preserve Vanilla's moved-wrongly gate for the captured GE packet route,
+     * including when Sable redirects this operand to unconditional true. */
+    @com.llamalad7.mixinextras.injector.ModifyExpressionValue(
+            method = "handleMovePlayer", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ServerPlayerGameMode;isCreative()Z"), require = 1)
+    private boolean gravityengine$ownedPacketCreative(boolean original,
+            @Share("oldExactBody") LocalRef<CollisionBody> oldBody) {
+        return oldBody.get() != null || GravityInfluencePolicy.usesCustomLocomotion(this.player)
+                ? this.player.gameMode.isCreative() : original;
     }
 
     @WrapOperation(
@@ -142,15 +203,22 @@ public abstract class ServerGamePacketListenerImplMixin {
             Entity actor,
             AABB box,
             Operation<Boolean> original,
-            @Share("oldExactBody") LocalRef<CollisionBody> oldBody
+            @Share("oldExactBody") LocalRef<CollisionBody> oldBody,
+            @Share("rigidOccupancySnapshot")
+            LocalRef<RigidOccupancySnapshot> snapshot
     ) {
         CollisionBody previous = oldBody.get();
-        if (previous == null && !GravityInfluencePolicy.usesExactBodyCollision(actor)) {
+        if (previous == null) {
+            // The application barrier keeps this invocation on its captured
+            // Vanilla geometry path; a pending capability handoff runs later.
             return original.call(level, actor, box);
         }
         return VanillaBodyOccupancy.oldBodyClear(
-                level, actor, box,
-                previous != null ? previous : VanillaBodyOccupancy.fromVanillaBounds(box)
+                level,
+                (ServerPlayer) actor,
+                box,
+                previous,
+                snapshot.get()
         );
     }
 
@@ -168,34 +236,26 @@ public abstract class ServerGamePacketListenerImplMixin {
             AABB box,
             double x, double y, double z,
             Operation<Boolean> original,
-            @Share("oldExactBody") LocalRef<CollisionBody> oldBody
+            @Share("oldExactBody") LocalRef<CollisionBody> oldBody,
+            @Share("rigidOccupancySnapshot")
+            LocalRef<RigidOccupancySnapshot> snapshot
     ) {
         CollisionBody previous = oldBody.get();
-        if (previous == null && !GravityInfluencePolicy.usesExactBodyCollision(this.player)) {
+        if (previous == null) {
             return original.call(listener, level, box, x, y, z);
         }
-        return VanillaBodyOccupancy.hasNewCollision(
-                level, this.player,
-                previous != null ? previous : VanillaBodyOccupancy.fromVanillaBounds(box),
-                x, y, z
+        CollisionBody requested = VanillaBodyOccupancy.atRequestedPosition(
+                VanillaBodyOccupancy.capturePhysicalBody(this.player),
+                this.player.position(),
+                new Vec3(x, y, z)
         );
-    }
-
-    /** The six-argument overload is the single Vanilla teleport packet producer:
-     * commands, corrections and the five-argument overload all reach this seam. */
-    @WrapMethod(method = "teleport(DDDFFLjava/util/Set;)V", require = 1)
-    private void gravityengine$traceViewTeleport(double x, double y, double z, float yaw, float pitch,
-            java.util.Set<RelativeMovement> relative, Operation<Void> original) {
-        if (!PlayerViewDebugLog.ENABLED) { original.call(x, y, z, yaw, pitch, relative); return; }
-        try (var trace = PlayerViewDebugLog.begin(player, "server-teleport",
-                "targetP=%s targetYaw=%s targetPitch=%s relative=%s wireYaw=%s wirePitch=%s",
-                new Vec3(x, y, z), yaw, pitch, relative,
-                yaw - (relative.contains(RelativeMovement.Y_ROT) ? player.getYRot() : 0),
-                pitch - (relative.contains(RelativeMovement.X_ROT) ? player.getXRot() : 0))) {
-            original.call(x, y, z, yaw, pitch, relative);
-            PlayerViewDebugLog.event(player, "server-teleport-sent", "teleportId=%s relative=%s",
-                    this.awaitingTeleport, relative);
-        }
+        return VanillaBodyOccupancy.hasNewCollision(
+                level,
+                this.player,
+                previous,
+                requested,
+                snapshot.get()
+        );
     }
 
     /**
@@ -212,7 +272,12 @@ public abstract class ServerGamePacketListenerImplMixin {
     private boolean gravityengine$referenceUpwardMovement(boolean vanilla,
             @Local(index = 17) double dx, @Local(index = 19) double dy, @Local(index = 21) double dz) {
         GravityFrame frame = gravityengine$referenceFrame();
-        return frame == null ? vanilla : new Vec3(dx, dy, dz).dot(frame.up()) > 0.0D;
+        return frame == null
+                ? vanilla
+                : new Vec3(dx, dy, dz).dot(
+                        MinecraftMathAdapter.toMinecraft(
+                                        frame.up()))
+                        > 0.0D;
     }
 
     /**
@@ -228,8 +293,12 @@ public abstract class ServerGamePacketListenerImplMixin {
             @Local(index = 3) double x, @Local(index = 5) double y, @Local(index = 7) double z) {
         GravityFrame frame = gravityengine$referenceFrame();
         if (frame == null) return vanilla;
-        Vec3 tangent = frame.worldToLocal(new Vec3(x, y, z).subtract(this.player.position()));
-        return tangent.x * tangent.x + tangent.z * tangent.z;
+        cc.sighs.gravityengine.api.math.Vec3d tangent =
+                frame.worldToLocal(
+                        MinecraftMathAdapter.toVec3d(
+                                        new Vec3(x, y, z).subtract(
+                                                this.player.position())));
+        return tangent.x() * tangent.x() + tangent.z() * tangent.z();
     }
 
     /**
@@ -268,7 +337,10 @@ public abstract class ServerGamePacketListenerImplMixin {
         GravityFrame frame = gravityengine$referenceFrame();
         if (frame == null) return original.call(listener, entity);
         return entity.level().getBlockStates(entity.getBoundingBox().inflate(0.0625D)
-                        .expandTowards(frame.down().scale(0.55D)))
+                        .expandTowards(
+                                MinecraftMathAdapter.toMinecraft(
+                                                frame.down()
+                                                        .multiply(0.55D))))
                 .allMatch(BlockBehaviour.BlockStateBase::isAir);
     }
 
@@ -286,7 +358,7 @@ public abstract class ServerGamePacketListenerImplMixin {
 
     /** Same-tick custom grounding publication; the packet's own value is the fallback. */
     @Unique private boolean gravityengine$resolvedGround(boolean vanillaGrounded) {
-        return GravityEntityAccess.cast(this.player).gravityengine$gravityComponent().runtime()
+        return GravityEntityAccess.cast(this.player).gravityengine$gravityComponent().operationState()
                 .lastCommittedMovementGroundContinuity(this.player.level().getGameTime())
                 .map(MovementGroundContinuity::gameplayGrounded)
                 .orElse(vanillaGrounded);

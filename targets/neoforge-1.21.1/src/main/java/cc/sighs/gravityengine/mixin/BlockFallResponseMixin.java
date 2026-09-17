@@ -30,11 +30,21 @@ public abstract class BlockFallResponseMixin {
                                     + "Lnet/minecraft/world/phys/Vec3;"
             )
     )
+//    private Vec3 gravityengine$local(
+//            Entity entity,
+//            Operation<Vec3> original
+//    ) {
+//        return VanillaBlockResponse.fallLocal(
+//                entity,
+//                original.call(entity)
+//        );
+//    }
+//TODO
     private Vec3 gravityengine$local(
             Entity entity,
             Operation<Vec3> original
     ) {
-        return VanillaBlockResponse.fallLocal(
+        return VanillaBlockResponse.local(
                 entity,
                 original.call(entity)
         );
@@ -50,6 +60,20 @@ public abstract class BlockFallResponseMixin {
                                     + "Lnet/minecraft/world/phys/Vec3;)V"
             )
     )
+//    private void gravityengine$world(
+//            Entity entity,
+//            Vec3 local,
+//            Operation<Void> original
+//    ) {
+//        original.call(
+//                entity,
+//                VanillaBlockResponse.fallWorld(
+//                        entity,
+//                        local
+//                )
+//        );
+//    }
+//TODO
     private void gravityengine$world(
             Entity entity,
             Vec3 local,
@@ -57,10 +81,7 @@ public abstract class BlockFallResponseMixin {
     ) {
         original.call(
                 entity,
-                VanillaBlockResponse.fallWorld(
-                        entity,
-                        local
-                )
+                VanillaBlockResponse.world(entity, local)
         );
     }
 }

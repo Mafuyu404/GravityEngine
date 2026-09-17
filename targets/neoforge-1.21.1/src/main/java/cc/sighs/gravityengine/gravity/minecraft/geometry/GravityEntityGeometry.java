@@ -1,33 +1,37 @@
 package cc.sighs.gravityengine.gravity.minecraft.geometry;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.GravityState;
-import cc.sighs.gravityengine.gravity.collision.MinecraftGeometryAdapter;
 import cc.sighs.gravityengine.gravity.debug.GravityDebugLog;
-import cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody;
 import cc.sighs.gravityengine.gravity.kinematic.geometry.CharacterCapsule;
+import cc.sighs.gravityengine.gravity.kinematic.geometry.CharacterDimensionPolicy;
+import cc.sighs.gravityengine.gravity.kinematic.geometry.CollisionBody;
+import cc.sighs.gravityengine.gravity.kinematic.geometry.KinematicPose;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
-import cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState;
+import cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
+import cc.sighs.gravityengine.gravity.runtime.GravityOperationState;
 import cc.sighs.gravityengine.math.geometry.Aabb3d;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Vector3d;
 
 /**
- * Authoritative custom-gravity body geometry.
+ * Installed physical body authority and custom-gravity geometry construction.
  *
  * Contract:
  * - P = entity.position() is Vanilla's network/world position anchor;
  * - C = P + WORLD_UP * dimensions.height/2, independent of frame and Qbody;
  * - Fg = C - gravityUp * dimensions.height/2 is a support reference,
  *   not a support witness or the anatomical lower endpoint of arbitrary Qbody;
- * - the production character exact body is a rounded axial {@code CharacterCapsule} built from
+ * - installed non-default reference geometry uses a rounded axial {@code CharacterCapsule} built from
  *   authoritative dimensions, center/positionAnchor, and the gravity-up axis;
- * - Entity#getBoundingBox is the exact body's conservative enclosing AABB;
+ * - Vanilla-owned geometry uses its actual AABB as an exact box, independently of solver routing;
+ * - for custom capsules Entity#getBoundingBox is only the conservative enclosing AABB;
  * - the exact body and public AABB always share the same center.
  */
 public final class GravityEntityGeometry {
@@ -71,7 +75,8 @@ public final class GravityEntityGeometry {
 
     public static Vec3 gravityFeet(Entity entity, GravityFrame frame) {
         return gravityFeetFromBodyCenter(bodyCenter(entity, frame),
-                dimensions(entity).height(), frame.down());
+                dimensions(entity).height(),
+                MinecraftMathAdapter.toMinecraft(frame.down()));
     }
 
     /**
@@ -99,7 +104,7 @@ public final class GravityEntityGeometry {
     /** Exact center of the currently installed custom body. */
     public static Vec3 installedBodyCenter(Entity entity) {
         GravityFrame installed = GravityEntityAccess.cast(entity)
-                .gravityengine$gravityComponent().runtime().geometryReferenceFrame();
+                .gravityengine$gravityComponent().operationState().geometryReferenceFrame();
         if (installed == null) {
             throw new IllegalStateException(
                     "custom body has no installed collision axis"
@@ -109,13 +114,20 @@ public final class GravityEntityGeometry {
     }
 
     public static Vec3 eyePosition(Entity entity, Vec3 center, Vec3 down) {
-        return eyePosition(entity, center, GravityFrame.downOnly(down));
+        return eyePosition(
+                entity,
+                center,
+                GravityFrame.downOnly(
+                        MinecraftMathAdapter.toVec3d(down)
+                )
+        );
     }
 
     public static Vec3 eyePosition(Entity entity, Vec3 center, GravityFrame frame) {
         double offsetFromCenter = entity.getEyeHeight() - entity.getBbHeight() * 0.5D;
-        Vector3d axis = MinecraftGeometryAdapter.toJoml(frame.up(), new Vector3d());
-        return center.add(new Vec3(axis.x, axis.y, axis.z).scale(offsetFromCenter));
+        return center.add(
+                MinecraftMathAdapter.toMinecraft(frame.up())
+                        .scale(offsetFromCenter));
     }
 
     /**
@@ -157,10 +169,19 @@ public final class GravityEntityGeometry {
 
     public static GravityFrame frameAtPositionAnchor(Entity entity, GravityState state, Vec3 positionAnchor) {
         Vec3 center = bodyCenterFromPositionAnchor(positionAnchor, dimensions(entity).height());
-        return GravityFrame.fromState(state, center);
+        return GravityFrame.fromState(
+                state,
+                MinecraftMathAdapter.toVec3d(center)
+        );
     }
 
+    /** Installed physical representation, independent of collision solver routing.
+     * External geometry does not turn a Vanilla box into a custom capsule. */
     public static CollisionBody body(Entity entity, GravityFrame frame) {
+        if (!cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy.usesCustomBody(entity)) {
+            return cc.sighs.gravityengine.gravity.kinematic.geometry.OrientedBox.axisAligned(
+                    MinecraftCollisionGeometryAdapter.toAabb3d(entity.getBoundingBox()));
+        }
         return candidateBody(
                 entity, dimensions(entity), entity.position(), frame
         );
@@ -173,8 +194,27 @@ public final class GravityEntityGeometry {
 
     /** Sole production constructor from Vanilla P, dimensions and collision up. */
     public static CharacterCapsule candidateBody(EntityDimensions dimensions, Vec3 positionAnchor, Vec3 up) {
-        return characterBodyAtCenter(dimensions.width(), dimensions.height(),
-                bodyCenterFromPositionAnchor(positionAnchor, dimensions.height()), up);
+        return candidateBody(
+                dimensions,
+                positionAnchor,
+                MinecraftMathAdapter.toVec3d(up)
+        );
+    }
+
+    public static CharacterCapsule candidateBody(
+            EntityDimensions dimensions,
+            Vec3 positionAnchor,
+            Vec3d up
+    ) {
+        return characterBodyAtCenter(
+                dimensions.width(),
+                dimensions.height(),
+                bodyCenterFromPositionAnchor(
+                        positionAnchor,
+                        dimensions.height()
+                ),
+                up
+        );
     }
 
     public static CharacterCapsule candidateBody(EntityDimensions dimensions, Vec3 positionAnchor, GravityFrame frame) {
@@ -182,14 +222,70 @@ public final class GravityEntityGeometry {
     }
 
     public static CharacterCapsule characterBodyAtCenter(double width, double height, Vec3 center, Vec3 up) {
+        return characterBodyAtCenter(
+                width,
+                height,
+                center,
+                MinecraftMathAdapter.toVec3d(up)
+        );
+    }
+
+    public static CharacterCapsule characterBodyAtCenter(
+            double width,
+            double height,
+            Vec3 center,
+            Vec3d up
+    ) {
         CharacterDimensionPolicy.requireCapsule(width, height);
-        return CharacterCapsule.fromDimensions(MinecraftGeometryAdapter.toJoml(center, new Vector3d()),
-                width, height, MinecraftGeometryAdapter.toJoml(up, new Vector3d()));
+
+        return CharacterCapsule.fromDimensions(
+                MinecraftMathAdapter.toVec3d(center),
+                width,
+                height,
+                up
+        );
     }
 
     public static CharacterCapsule candidateBodyAtCenter(Entity entity, EntityDimensions dimensions,
             Vec3 center, GravityFrame frame) {
         return characterBodyAtCenter(dimensions.width(), dimensions.height(), center, frame.up());
+    }
+
+    /**
+     * P-preserving construction policy: update the collision axis while
+     * retaining the entity/network position exactly.
+     *
+     * <p>Packet validation forbids a support-preserving preparation
+     * translation. At fixed dimensions this is also the full pose-anchor
+     * policy, because the canonical character geometry keeps
+     * {@code C = P + worldUp * height/2}: one exact body at one P exists per
+     * axis, so a separate center-preserving candidate could never differ from
+     * this one.</p>
+     *
+     * <p>The returned pose is the loader-neutral value; this method only
+     * supplies the Minecraft dimension capture and the exact-body
+     * construction.</p>
+     */
+    public static KinematicPose posePreservingPositionAnchor(
+            EntityDimensions dimensions,
+            Vec3d positionAnchor,
+            GravityFrame frame
+    ) {
+        Vec3d center = KinematicPose.characterCenter(
+                positionAnchor,
+                dimensions.height()
+        );
+        return new KinematicPose(
+                positionAnchor,
+                center,
+                frame,
+                characterBodyAtCenter(
+                        dimensions.width(),
+                        dimensions.height(),
+                        MinecraftMathAdapter.toMinecraft(center),
+                        MinecraftMathAdapter.toMinecraft(frame.up())
+                )
+        );
     }
 
     /** Rebuilds the custom broad-phase AABB while preserving the positionAnchor anchor. */
@@ -217,16 +313,18 @@ public final class GravityEntityGeometry {
      */
     public static void reanchorAfterVanillaTranslation(Entity entity, GravityFrame frame) {
         CollisionBody body = candidateBody(entity, dimensions(entity), entity.position(), frame);
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
+        GravityOperationState runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
         try (var ignored = runtime.openGeometryMutation()) {
-            entity.setBoundingBox(MinecraftGeometryAdapter.toMinecraft(body.enclosingAabb()));
+            entity.setBoundingBox(
+                    MinecraftCollisionGeometryAdapter.toMinecraft(
+                            body.enclosingAabb()));
             runtime.setInstalledCollisionAxisFromFrame(frame);
         }
     }
 
     /** P from an exact body's authoritative local height, never its rotated proxy. */
     public static Vec3 positionAnchorFromBody(CharacterCapsule body) {
-        return positionAnchorFromBodyCenter(MinecraftGeometryAdapter.toMinecraft(body.center()),
+        return positionAnchorFromBodyCenter(MinecraftMathAdapter.toMinecraft(body.center()),
                 body.totalHeight());
     }
 
@@ -244,19 +342,21 @@ public final class GravityEntityGeometry {
         if (entity == null || frame == null || positionAnchor == null || body == null) {
             throw new NullPointerException("custom body commit arguments");
         }
-        if (GravityDebugLog.ENABLED) {
+        if (GravityDebugLog.shouldLog(entity)) {
             Vec3 oldPositionAnchor = entity.position();
             Vec3 oldCenter = entity.getBoundingBox().getCenter();
             Vec3 positionDeltaWorld = positionAnchor.subtract(oldPositionAnchor);
             Vec3 centerDeltaWorld =
-                    MinecraftGeometryAdapter.toMinecraft(body.center())
+                    MinecraftMathAdapter.toMinecraft(body.center())
                             .subtract(oldCenter);
-            Vec3 positionDeltaLocal = frame.worldToLocal(positionDeltaWorld);
-            Vec3 centerDeltaLocal = frame.worldToLocal(centerDeltaWorld);
-            if (Math.abs(positionDeltaLocal.y) >= 0.02D
-                    || Math.abs(centerDeltaLocal.y) >= 0.02D) {
-                GravityRuntimeState runtime = GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
+            Vec3d positionDeltaLocal = frame.worldToLocal(
+                    MinecraftMathAdapter.toVec3d(positionDeltaWorld));
+            Vec3d centerDeltaLocal = frame.worldToLocal(
+                    MinecraftMathAdapter.toVec3d(centerDeltaWorld));
+            if (Math.abs(positionDeltaLocal.y()) >= 0.02D
+                    || Math.abs(centerDeltaLocal.y()) >= 0.02D) {
+                GravityOperationState runtime = GravityEntityAccess.cast(entity)
+                        .gravityengine$gravityComponent().operationState();
                 Vec3 velocity = entity.getDeltaMovement();
                 GravityDebugLog.log(
                         entity,
@@ -278,7 +378,8 @@ public final class GravityEntityGeometry {
                         GravityDebugLog.vec(centerDeltaLocal),
                         GravityDebugLog.vec(velocity),
                         GravityDebugLog.vec(
-                                frame.worldToLocal(velocity)
+                                frame.worldToLocal(
+                                        MinecraftMathAdapter.toVec3d(velocity))
                         ),
                         GravityDebugLog.callerStack()
                 );
@@ -288,7 +389,9 @@ public final class GravityEntityGeometry {
                 entity, dimensions(entity), positionAnchor, frame
         );
         boolean axesMatch = expected.geometricallyEquals(body);
-        if (!axesMatch || !centersMatch(expected.center(), body.center())
+        if (!axesMatch || !centersMatch(
+                MinecraftMathAdapter.toMinecraft(expected.center()),
+                MinecraftMathAdapter.toMinecraft(body.center()))
                 || !aabbsMatch(expected.enclosingAabb(), body.enclosingAabb())) {
             throw new IllegalArgumentException(
                     "custom body does not match positionAnchor/frame: positionAnchor=" + positionAnchor
@@ -298,11 +401,11 @@ public final class GravityEntityGeometry {
             );
         }
 
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
-        try (GravityRuntimeState.GeometryScope ignored = runtime.openGeometryMutation()) {
+        GravityOperationState runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
+        try (GravityOperationState.GeometryScope ignored = runtime.openGeometryMutation()) {
             entity.setPosRaw(positionAnchor.x, positionAnchor.y, positionAnchor.z);
             entity.setBoundingBox(
-                    MinecraftGeometryAdapter.toMinecraft(
+                    MinecraftCollisionGeometryAdapter.toMinecraft(
                             body.enclosingAabb()));
             runtime.setInstalledCollisionAxisFromFrame(frame);
         }
@@ -311,8 +414,8 @@ public final class GravityEntityGeometry {
 
     /** Central vanilla/proxy commit; Vanilla ownership has no installed custom collision axis. */
     public static void commitVanillaBody(Entity entity, Vec3 positionAnchor, AABB box) {
-        GravityRuntimeState runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().runtime();
-        try (GravityRuntimeState.GeometryScope ignored = runtime.openGeometryMutation()) {
+        GravityOperationState runtime = GravityEntityAccess.cast(entity).gravityengine$gravityComponent().operationState();
+        try (GravityOperationState.GeometryScope ignored = runtime.openGeometryMutation()) {
             entity.setPosRaw(positionAnchor.x, positionAnchor.y, positionAnchor.z);
             entity.setBoundingBox(box);
             runtime.clearInstalledCollisionAxis();
@@ -371,10 +474,10 @@ public final class GravityEntityGeometry {
                     "exact geometry restore requires finite values"
             );
         }
-        GravityRuntimeState runtime =
+        GravityOperationState runtime =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime();
-        try (GravityRuntimeState.GeometryScope ignored =
+                        .gravityengine$gravityComponent().operationState();
+        try (GravityOperationState.GeometryScope ignored =
                      runtime.openGeometryMutation()) {
             entity.setPosRaw(positionAnchor.x, positionAnchor.y, positionAnchor.z);
             entity.setBoundingBox(box);
@@ -394,7 +497,9 @@ public final class GravityEntityGeometry {
                 entity.position(),
                 frame
         );
-        return centersMatch(exact.center(), entity.getBoundingBox().getCenter())
+        return centersMatch(
+                MinecraftMathAdapter.toMinecraft(exact.center()),
+                entity.getBoundingBox().getCenter())
                 && aabbsMatch(exact.enclosingAabb(), entity.getBoundingBox());
     }
 
@@ -405,7 +510,9 @@ public final class GravityEntityGeometry {
             AABB liveProxy
     ) {
         CollisionBody exact = candidateBody(dimensions, positionAnchor, frame);
-        return centersMatch(exact.center(), liveProxy.getCenter())
+        return centersMatch(
+                MinecraftMathAdapter.toMinecraft(exact.center()),
+                liveProxy.getCenter())
                 && aabbsMatch(exact.enclosingAabb(), liveProxy);
     }
 
@@ -418,7 +525,7 @@ public final class GravityEntityGeometry {
         CollisionBody exact = body(entity, frame);
         Vec3 proxy = proxyCenter(entity);
         Vec3 drift = proxy.subtract(
-                MinecraftGeometryAdapter.toMinecraft(exact.center()));
+                MinecraftMathAdapter.toMinecraft(exact.center()));
         throw new IllegalStateException(
                 context + ": custom geometry/frame mismatch: positionAnchor=" + entity.position()
                         + ", proxyCenter=" + proxy
@@ -443,17 +550,7 @@ public final class GravityEntityGeometry {
     }
 
     private static boolean centersMatch(Vec3 first, Vec3 second) {
-        return first.subtract(second).lengthSqr() <= GEOMETRY_FRAME_EPSILON_SQUARED;
-    }
-
-    private static boolean centersMatch(Vector3d first, Vec3 second) {
-        return MinecraftGeometryAdapter.toMinecraft(first)
-                .subtract(second).lengthSqr()
-                <= GEOMETRY_FRAME_EPSILON_SQUARED;
-    }
-
-    private static boolean centersMatch(Vector3d first, Vector3d second) {
-        return new Vector3d(first).sub(second).lengthSquared()
+        return first.subtract(second).lengthSqr()
                 <= GEOMETRY_FRAME_EPSILON_SQUARED;
     }
 
@@ -468,13 +565,13 @@ public final class GravityEntityGeometry {
 
     private static boolean aabbsMatch(Aabb3d first, AABB second) {
         return aabbsMatch(
-                MinecraftGeometryAdapter.toMinecraft(first), second);
+                MinecraftCollisionGeometryAdapter.toMinecraft(first), second);
     }
 
     private static boolean aabbsMatch(Aabb3d first, Aabb3d second) {
         return aabbsMatch(
-                MinecraftGeometryAdapter.toMinecraft(first),
-                MinecraftGeometryAdapter.toMinecraft(second));
+                MinecraftCollisionGeometryAdapter.toMinecraft(first),
+                MinecraftCollisionGeometryAdapter.toMinecraft(second));
     }
 
     private static boolean approximatelyEqual(double first, double second) {

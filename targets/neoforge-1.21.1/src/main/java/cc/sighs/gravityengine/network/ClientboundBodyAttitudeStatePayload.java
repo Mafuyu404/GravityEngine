@@ -6,12 +6,12 @@ import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeComponent;
 import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeContinuity;
 import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership;
 import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason;
+import cc.sighs.gravityengine.math.Quatd;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Player;
-import org.joml.Quaterniond;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -31,8 +31,8 @@ public record ClientboundBodyAttitudeStatePayload(
         BodyAttitudeContinuity continuity,
         BodyAttitudeOwnership ownership,
         BodyAttitudeSuspensionReason suspensionReason,
-        Quaterniond worldFromBody,
-        Quaterniond worldFromController,
+        Quatd worldFromBody,
+        Quatd worldFromController,
         boolean swimActive
 ) implements CustomPacketPayload {
     public static final int HARD_MAX_DIMENSION_ID_CHARACTERS = cc.sighs.gravityengine.protocol.BodyAttitudeProtocolLimits.HARD_MAX_DIMENSION_ID_CHARACTERS;
@@ -124,11 +124,11 @@ public record ClientboundBodyAttitudeStatePayload(
                 ((cc.sighs.gravityengine.gravity.minecraft.access.CharacterControlAccess) player).gravityengine$characterMode().swimActive());
     }
 
-    @Override public Quaterniond worldFromBody() {
-        return new Quaterniond(worldFromBody);
+    @Override public Quatd worldFromBody() {
+        return worldFromBody;
     }
 
-    @Override public Quaterniond worldFromController() { return new Quaterniond(worldFromController); }
+    @Override public Quatd worldFromController() { return worldFromController; }
 
     private static void encode(
             FriendlyByteBuf buf,
@@ -146,10 +146,10 @@ public record ClientboundBodyAttitudeStatePayload(
         buf.writeByte(BodyAttitudeWireValues.continuityId(value.continuity()));
         buf.writeByte(BodyAttitudeWireValues.ownershipId(value.ownership()));
         buf.writeByte(BodyAttitudeWireValues.suspensionReasonId(value.suspensionReason()));
-        Quaterniond q = value.worldFromBody;
-        buf.writeDouble(q.x); buf.writeDouble(q.y); buf.writeDouble(q.z); buf.writeDouble(q.w);
-        Quaterniond controller = value.worldFromController;
-        buf.writeDouble(controller.x); buf.writeDouble(controller.y); buf.writeDouble(controller.z); buf.writeDouble(controller.w);
+        Quatd q = value.worldFromBody;
+        buf.writeDouble(q.x()); buf.writeDouble(q.y()); buf.writeDouble(q.z()); buf.writeDouble(q.w());
+        Quatd controller = value.worldFromController;
+        buf.writeDouble(controller.x()); buf.writeDouble(controller.y()); buf.writeDouble(controller.z()); buf.writeDouble(controller.w());
         buf.writeBoolean(value.swimActive);
 
     }
@@ -168,9 +168,9 @@ public record ClientboundBodyAttitudeStatePayload(
         BodyAttitudeOwnership ownership = BodyAttitudeWireValues.ownership(buf.readByte());
         BodyAttitudeSuspensionReason suspensionReason =
                 BodyAttitudeWireValues.suspensionReason(buf.readByte());
-        Quaterniond q = new Quaterniond(
+        Quatd q = new Quatd(
                 buf.readDouble(), buf.readDouble(), buf.readDouble(), buf.readDouble());
-        Quaterniond controller = new Quaterniond(buf.readDouble(), buf.readDouble(), buf.readDouble(), buf.readDouble());
+        Quatd controller = new Quatd(buf.readDouble(), buf.readDouble(), buf.readDouble(), buf.readDouble());
         boolean swim = buf.readBoolean();
         return new ClientboundBodyAttitudeStatePayload(
                 entityId, uuid, dimension, streamEpoch, revision, serverGameTick,

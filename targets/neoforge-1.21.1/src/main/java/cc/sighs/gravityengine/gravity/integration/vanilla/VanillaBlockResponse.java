@@ -1,12 +1,13 @@
 package cc.sighs.gravityengine.gravity.integration.vanilla;
 
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.collision.GravityMoveResult;
 import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
+import cc.sighs.gravityengine.math.Quatd;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Quaterniond;
-import org.joml.Vector3d;
 
 /**
  * Adapts Vanilla block-response scalar/vector carriers without transferring
@@ -32,7 +33,7 @@ public final class VanillaBlockResponse {
      * zero/negate-Y formulas can therefore execute unchanged.</p>
      */
     public static Vec3 fallLocal(Entity entity, Vec3 world) {
-        Quaterniond rotation = fallResponseRotation(entity);
+        Quatd rotation = fallResponseRotation(entity);
 
         if (rotation == null) {
             /*
@@ -43,21 +44,10 @@ public final class VanillaBlockResponse {
             return local(entity, world);
         }
 
-        Vector3d result =
-                new Quaterniond(rotation)
-                        .conjugate()
-                        .transform(
-                                new Vector3d(
-                                        world.x,
-                                        world.y,
-                                        world.z
-                                )
-                        );
-
-        return new Vec3(
-                result.x,
-                result.y,
-                result.z
+        return MinecraftMathAdapter.toMinecraft(
+                rotation.conjugate().transform(
+                        MinecraftMathAdapter.toVec3d(world)
+                )
         );
     }
 
@@ -65,25 +55,16 @@ public final class VanillaBlockResponse {
      * Convert a native landing-response carrier back to world velocity.
      */
     public static Vec3 fallWorld(Entity entity, Vec3 local) {
-        Quaterniond rotation = fallResponseRotation(entity);
+        Quatd rotation = fallResponseRotation(entity);
 
         if (rotation == null) {
             return world(entity, local);
         }
 
-        Vector3d result =
+        return MinecraftMathAdapter.toMinecraft(
                 rotation.transform(
-                        new Vector3d(
-                                local.x,
-                                local.y,
-                                local.z
-                        )
-                );
-
-        return new Vec3(
-                result.x,
-                result.y,
-                result.z
+                        MinecraftMathAdapter.toVec3d(local)
+                )
         );
     }
 
@@ -96,14 +77,14 @@ public final class VanillaBlockResponse {
      * terminal support is empty but the landing callback still requires the
      * original impact normal.</p>
      */
-    private static Quaterniond fallResponseRotation(Entity entity) {
+    private static Quatd fallResponseRotation(Entity entity) {
         if (!GravityInfluencePolicy.usesCustomCollision(entity)) {
             return null;
         }
 
         GravityMoveResult move =
                 GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime()
+                        .gravityengine$gravityComponent().operationState()
                         .currentMoveResult();
 
         return fallResponseRotation(move);
@@ -113,7 +94,7 @@ public final class VanillaBlockResponse {
      * Package-private for focused tests. Returning null means "no authoritative
      * landing normal; use the existing reference-space fallback".
      */
-    static Quaterniond fallResponseRotation(GravityMoveResult move) {
+    static Quatd fallResponseRotation(GravityMoveResult move) {
         if (move == null
                 || move.indeterminate()
                 || !move.blockedDown()) {
@@ -133,16 +114,12 @@ public final class VanillaBlockResponse {
             return null;
         }
 
-        Vector3d normal =
+        Vec3d normal =
                 contact.orElseThrow().normal();
 
-        return new Quaterniond().rotationTo(
-                0.0D,
-                1.0D,
-                0.0D,
-                normal.x,
-                normal.y,
-                normal.z
+        return Quatd.rotationTo(
+                Vec3d.Y,
+                normal
         );
     }
 
@@ -159,7 +136,11 @@ public final class VanillaBlockResponse {
 
         return frame == null
                 ? world
-                : frame.worldToLocal(world);
+                : MinecraftMathAdapter.toMinecraft(
+                        frame.worldToLocal(
+                                MinecraftMathAdapter.toVec3d(world)
+                        )
+                );
     }
 
     /**
@@ -174,6 +155,10 @@ public final class VanillaBlockResponse {
 
         return frame == null
                 ? local
-                : frame.localToWorld(local);
+                : MinecraftMathAdapter.toMinecraft(
+                        frame.localToWorld(
+                                MinecraftMathAdapter.toVec3d(local)
+                        )
+                );
     }
 }

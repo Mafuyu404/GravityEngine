@@ -1,13 +1,14 @@
 package cc.sighs.gravityengine.network;
 
 import cc.sighs.gravityengine.GravityEngine;
-import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeOwnership;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeSuspensionReason;
+import cc.sighs.gravityengine.math.Quatd;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Player;
-import org.joml.Quaterniond;
 
 import java.util.Objects;
 
@@ -15,7 +16,7 @@ import java.util.Objects;
 public record ServerboundBodyAttitudeStatePayload(
         ResourceLocation dimensionId, long configGeneration, boolean initialized,
         BodyAttitudeOwnership ownership, BodyAttitudeSuspensionReason suspensionReason,
-        Quaterniond worldFromBody, Quaterniond worldFromController, boolean swimActive,
+        Quatd worldFromBody, Quatd worldFromController, boolean swimActive,
         long streamEpoch, long stateSequence
 ) implements CustomPacketPayload {
     public static final Type<ServerboundBodyAttitudeStatePayload> TYPE = new Type<>(
@@ -47,9 +48,9 @@ public record ServerboundBodyAttitudeStatePayload(
     public boolean hasUsableRepresentation() {
         return BodyAttitudeRepresentation.usable(worldFromBody, worldFromController);
     }
-    @Override public Quaterniond worldFromBody() { return new Quaterniond(worldFromBody); }
+    @Override public Quatd worldFromBody() { return worldFromBody; }
 
-    @Override public Quaterniond worldFromController() { return new Quaterniond(worldFromController); }
+    @Override public Quatd worldFromController() { return worldFromController; }
 
     public static ServerboundBodyAttitudeStatePayload from(Player player) {
         var c = cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime.Access.component(player).snapshot();
@@ -71,10 +72,10 @@ public record ServerboundBodyAttitudeStatePayload(
         b.writeResourceLocation(p.dimensionId); b.writeVarLong(p.configGeneration); b.writeBoolean(p.initialized);
         b.writeByte(BodyAttitudeWireValues.ownershipId(p.ownership));
         b.writeByte(BodyAttitudeWireValues.suspensionReasonId(p.suspensionReason));
-        b.writeDouble(p.worldFromBody.x); b.writeDouble(p.worldFromBody.y);
-        b.writeDouble(p.worldFromBody.z); b.writeDouble(p.worldFromBody.w);
-        b.writeDouble(p.worldFromController.x); b.writeDouble(p.worldFromController.y);
-        b.writeDouble(p.worldFromController.z); b.writeDouble(p.worldFromController.w);
+        b.writeDouble(p.worldFromBody.x()); b.writeDouble(p.worldFromBody.y());
+        b.writeDouble(p.worldFromBody.z()); b.writeDouble(p.worldFromBody.w());
+        b.writeDouble(p.worldFromController.x()); b.writeDouble(p.worldFromController.y());
+        b.writeDouble(p.worldFromController.z()); b.writeDouble(p.worldFromController.w());
         b.writeBoolean(p.swimActive);
         b.writeVarLong(p.streamEpoch); b.writeVarLong(p.stateSequence);
     }
@@ -82,8 +83,8 @@ public record ServerboundBodyAttitudeStatePayload(
     private static ServerboundBodyAttitudeStatePayload decode(FriendlyByteBuf b) {
         return new ServerboundBodyAttitudeStatePayload(b.readResourceLocation(), b.readVarLong(), b.readBoolean(),
                 BodyAttitudeWireValues.ownership(b.readByte()), BodyAttitudeWireValues.suspensionReason(b.readByte()),
-                new Quaterniond(b.readDouble(), b.readDouble(), b.readDouble(), b.readDouble()),
-                new Quaterniond(b.readDouble(), b.readDouble(), b.readDouble(), b.readDouble()), b.readBoolean(),
+                new Quatd(b.readDouble(), b.readDouble(), b.readDouble(), b.readDouble()),
+                new Quatd(b.readDouble(), b.readDouble(), b.readDouble(), b.readDouble()), b.readBoolean(),
                 b.readVarLong(), b.readVarLong());
     }
     @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }

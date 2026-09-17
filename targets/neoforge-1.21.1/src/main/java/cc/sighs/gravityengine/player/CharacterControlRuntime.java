@@ -1,10 +1,9 @@
 package cc.sighs.gravityengine.player;
 
 import cc.sighs.gravityengine.attitude.BodyAttitudeConfigSnapshot;
-import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
 import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeControlPolicyResolver;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
 import cc.sighs.gravityengine.attitude.runtime.MinecraftBodyAttitudeSnapshotAdapter;
-
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.access.CharacterControlAccess;
 import cc.sighs.gravityengine.gravity.movement.*;
@@ -214,10 +213,10 @@ public final class CharacterControlRuntime {
     private static Optional<Boolean> liveTerminalSupport(Player player) {
         return cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess
                 .cast(player)
-                .gravityengine$gravityComponent().runtime()
+                .gravityengine$gravityComponent().operationState()
                 .completedEndpointGround()
                 .map(
-                        cc.sighs.gravityengine.gravity.runtime.GravityRuntimeState
+                        cc.sighs.gravityengine.gravity.runtime.GravityOperationState
                                 .CompletedEndpointGround::terminalSupported
                 );
     }

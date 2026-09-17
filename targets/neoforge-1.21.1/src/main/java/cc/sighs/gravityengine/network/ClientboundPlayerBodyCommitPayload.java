@@ -1,11 +1,15 @@
 package cc.sighs.gravityengine.network;
 
 import cc.sighs.gravityengine.GravityEngine;
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.GravityState;
-import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
 import cc.sighs.gravityengine.gravity.integration.geometry.NativeAabbApplicationCommit;
-import cc.sighs.gravityengine.gravity.model.*;
+import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.model.CommittedGravityApplication;
+import cc.sighs.gravityengine.gravity.model.GravityAccelerationMode;
+import cc.sighs.gravityengine.gravity.model.GravityApplicationPlan;
+import cc.sighs.gravityengine.gravity.model.GravitySuppressionReason;
 import cc.sighs.gravityengine.math.geometry.OrthonormalFrame3d;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -14,8 +18,6 @@ import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Pose;
-import net.minecraft.world.phys.Vec3;
-import org.joml.Vector3d;
 
 import java.util.Objects;
 
@@ -66,20 +68,27 @@ public record ClientboundPlayerBodyCommitPayload(
                 || !NativeAabbApplicationCommit.isNativeApplication(application, installedFrame))) {
             throw new IllegalArgumentException("native application commit cannot carry a teleport or exact body");
         }
-        if (correction != null && (!Double.isFinite(correction.getX())
-                || !Double.isFinite(correction.getY()) || !Double.isFinite(correction.getZ())
-                || !Float.isFinite(correction.getYRot()) || !Float.isFinite(correction.getXRot()))) {
+        if (correction != null
+                && !ClientboundPlayerBodyCommitPayload.isFinite(correction)) {
             throw new IllegalArgumentException("non-finite correction");
         }
+    }
+
+    private static boolean isFinite(ClientboundPlayerPositionPacket correction) {
+        return Double.isFinite(correction.getX())
+                && Double.isFinite(correction.getY())
+                && Double.isFinite(correction.getZ())
+                && Float.isFinite(correction.getYRot())
+                && Float.isFinite(correction.getXRot());
     }
 
     public static ClientboundPlayerBodyCommitPayload capture(
             ServerPlayer player, ClientboundPlayerPositionPacket correction) {
         var component = GravityEntityAccess.cast(player).gravityengine$gravityComponent();
         return new ClientboundPlayerBodyCommitPayload(SyncGravityStatePayload.from(player),
-                component.applicationEpoch(), component.committedApplication(), player.getPose(),
-                component.appliedPlan().usesCustomBody()
-                        ? Objects.requireNonNull(component.runtime().geometryReferenceFrame(), "installed frame")
+                component.state().applicationEpoch(), component.state().committedApplication(), player.getPose(),
+                component.state().appliedPlan().usesCustomBody()
+                        ? Objects.requireNonNull(component.operationState().geometryReferenceFrame(), "installed frame")
                         : null,
                 correction);
     }
@@ -123,7 +132,7 @@ public record ClientboundPlayerBodyCommitPayload(
         var pose = b.readEnum(Pose.class);
         GravityFrame frame = null;
         if (b.readBoolean()) {
-            Vec3 sample = readVector(b), left = readVector(b), up = readVector(b), forward = readVector(b);
+            Vec3d sample = readVector(b), left = readVector(b), up = readVector(b), forward = readVector(b);
             frame = new GravityFrame(sample, new OrthonormalFrame3d(
                     vector(left), vector(up), vector(forward)), b.readDouble());
         }
@@ -134,13 +143,13 @@ public record ClientboundPlayerBodyCommitPayload(
                 correction, nativeApplicationOnly);
     }
 
-    private static Vector3d vector(Vec3 v) { return new Vector3d(v.x, v.y, v.z); }
-    private static void writeVector(FriendlyByteBuf b, Vec3 v) {
-        b.writeDouble(v.x); b.writeDouble(v.y); b.writeDouble(v.z);
+    private static Vec3d vector(Vec3d v) { return new Vec3d(v.x(), v.y(), v.z()); }
+    private static void writeVector(FriendlyByteBuf b, Vec3d v) {
+        b.writeDouble(v.x()); b.writeDouble(v.y()); b.writeDouble(v.z());
     }
-    private static Vec3 readVector(FriendlyByteBuf b) {
-        Vec3 v = new Vec3(b.readDouble(), b.readDouble(), b.readDouble());
-        if (!Double.isFinite(v.x) || !Double.isFinite(v.y) || !Double.isFinite(v.z)) {
+    private static Vec3d readVector(FriendlyByteBuf b) {
+        Vec3d v = new Vec3d(b.readDouble(), b.readDouble(), b.readDouble());
+        if (!Double.isFinite(v.x()) || !Double.isFinite(v.y()) || !Double.isFinite(v.z())) {
             throw new IllegalArgumentException("non-finite vector");
         }
         return v;
