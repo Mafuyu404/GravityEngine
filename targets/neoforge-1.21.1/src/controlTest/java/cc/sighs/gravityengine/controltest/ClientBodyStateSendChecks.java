@@ -1,6 +1,7 @@
 package cc.sighs.gravityengine.controltest;
 
-import cc.sighs.gravityengine.attitude.runtime.*;
+import cc.sighs.gravityengine.attitude.runtime.BodyAttitudeRuntime;
+import cc.sighs.gravityengine.attitude.runtime.ReplicatedAttitudeState;
 import cc.sighs.gravityengine.client.ClientBodyAttitudeControl;
 import cc.sighs.gravityengine.network.ServerboundBodyAttitudeStatePayload;
 import net.minecraft.client.Minecraft;
@@ -13,7 +14,10 @@ import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.world.phys.Vec3;
-import java.util.*;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /** Runs the transformed LocalPlayer.sendPosition, capturing only this fixture's connection. */
@@ -36,9 +40,30 @@ final class ClientBodyStateSendChecks {
             actor.setPos(real.position());
             var current = BodyAttitudeRuntime.Access.component(real).snapshot();
             var owner = BodyAttitudeRuntime.Access.component(actor);
-            var state = cc.sighs.gravityengine.attitude.BodyAttitudeState.initialized(
-                    current.state().currentWorldFromBody(), current.state().angularVelocityWorld(),
-                    current.state().tick(), current.authoritativeRevision());
+            /*
+             * Replicate the live actor's complete attitude: q together with the
+             * declared angular dynamic ownership, never a fabricated angular
+             * velocity. Ownership is decided here, before the centralized
+             * handoff: a dynamic source contributes L_world and the effective
+             * inertia already resolved by this actor's receiving profile.
+             */
+            var liveDynamics =
+                    current.state().angularMomentum().orElse(null);
+            var state = liveDynamics == null
+                    ? cc.sighs.gravityengine.attitude.AttitudeDynamicHandoff
+                    .installKinematic(
+                            current.state().currentWorldFromBody(),
+                            current.state().tick(),
+                            current.authoritativeRevision(),
+                            true)
+                    : cc.sighs.gravityengine.attitude.AttitudeDynamicHandoff
+                    .installDynamic(
+                            current.state().currentWorldFromBody(),
+                            liveDynamics.angularMomentumWorld(),
+                            liveDynamics.inertia(),
+                            current.state().tick(),
+                            current.authoritativeRevision(),
+                            true);
             var result = owner.installReplicated(new ReplicatedAttitudeState(state, current.view(),
                     current.decision(), current.continuity(), current.ownership(), mc.level.getGameTime(),
                     current.authoritativeRevision(), current.authoritativeStreamEpoch(), current.authoritativeConfigGeneration()));

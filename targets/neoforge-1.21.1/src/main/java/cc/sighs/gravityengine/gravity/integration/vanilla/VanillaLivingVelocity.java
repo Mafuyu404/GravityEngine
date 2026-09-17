@@ -1,8 +1,12 @@
 package cc.sighs.gravityengine.gravity.integration.vanilla;
 
+import cc.sighs.gravityengine.gravity.geometry.BodyRepresentation;
+
+import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.gravity.GravityFrame;
 import cc.sighs.gravityengine.gravity.minecraft.GravityFrameAccess;
-import cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess;
+import cc.sighs.gravityengine.gravity.integration.collision.GravityCurrentSupportQuery;
+import cc.sighs.gravityengine.gravity.minecraft.math.MinecraftMathAdapter;
 import cc.sighs.gravityengine.gravity.policy.GravityInfluencePolicy;
 import cc.sighs.gravityengine.gravity.runtime.RestingContactSnapshot;
 import net.minecraft.world.entity.LivingEntity;
@@ -45,7 +49,7 @@ public final class VanillaLivingVelocity {
         GravityFrame frame =
                 GravityFrameAccess.authoritativeFrame(entity);
 
-        if (!GravityInfluencePolicy.requiresReferenceGeometry(frame)) {
+        if (!BodyRepresentation.requiresReferenceGeometry(frame)) {
             /*
              * Default-reference parity: preserve Vanilla's exact result and
              * avoid a transform round trip.
@@ -63,8 +67,8 @@ public final class VanillaLivingVelocity {
                         frame
                 );
 
-        RestingContactSnapshot support =
-                stableStaticSupport(entity);
+        if (referenceCleaned.equals(worldVelocity)) return referenceCleaned;
+        RestingContactSnapshot support = GravityCurrentSupportQuery.stableSupport(entity).orElse(null);
 
         if (support == null) {
             return referenceCleaned;
@@ -86,21 +90,27 @@ public final class VanillaLivingVelocity {
             Vec3 vanillaCleaned,
             GravityFrame frame
     ) {
-        if (!GravityInfluencePolicy.requiresReferenceGeometry(frame)) {
+        if (!BodyRepresentation.requiresReferenceGeometry(frame)) {
             return vanillaCleaned;
         }
 
-        Vec3 local =
-                frame.worldToLocal(worldVelocity);
-
-        Vec3 cleanedLocal =
-                new Vec3(
-                        cleanComponent(local.x),
-                        cleanComponent(local.y),
-                        cleanComponent(local.z)
+        Vec3d local =
+                frame.worldToLocal(
+                        MinecraftMathAdapter.toVec3d(
+                                worldVelocity
+                        )
                 );
 
-        return frame.localToWorld(cleanedLocal);
+        Vec3d cleanedLocal =
+                new Vec3d(
+                        cleanComponent(local.x()),
+                        cleanComponent(local.y()),
+                        cleanComponent(local.z())
+                );
+
+        return MinecraftMathAdapter.toMinecraft(
+                frame.localToWorld(cleanedLocal)
+        );
     }
 
     /**
@@ -130,10 +140,14 @@ public final class VanillaLivingVelocity {
             RestingContactSnapshot support
     ) {
         Vec3 normal =
-                support.normal();
+                MinecraftMathAdapter.toMinecraft(
+                        support.normal()
+                );
 
         Vec3 surfaceVelocity =
-                support.surfaceVelocity();
+                MinecraftMathAdapter.toMinecraft(
+                        support.surfaceVelocity()
+                );
 
         double beforeNormal =
                 before.subtract(surfaceVelocity)
@@ -153,50 +167,6 @@ public final class VanillaLivingVelocity {
         return cleaned.add(
                 normal.scale(correction)
         );
-    }
-
-    /**
-     * Returns only support evidence that is safe to consume before the next
-     * movement operation has revalidated the world.
-     *
-     * <p>The aiStep cleanup runs before travel opens the next collision scene,
-     * so it must not treat an old moving-body publication as current. Restrict
-     * this bridge to the already-supported cross-tick static block-face
-     * authority.</p>
-     */
-    private static RestingContactSnapshot stableStaticSupport(
-            LivingEntity entity
-    ) {
-        RestingContactSnapshot support =
-                GravityEntityAccess.cast(entity)
-                        .gravityengine$gravityComponent().runtime()
-                        .restingContactSnapshot();
-
-        if (support == null) {
-            return null;
-        }
-
-        long gameTick =
-                entity.level().getGameTime();
-
-        if (!support.usableAtStepStart(gameTick)) {
-            return null;
-        }
-
-        if (!support.staticSupport()) {
-            return null;
-        }
-
-        /*
-         * aiStep executes before the new operation can validate dynamic or
-         * approximate support. Only a finite trusted static block face has a
-         * cross-tick plane that is authoritative here.
-         */
-        if (!support.planePreservationEligible()) {
-            return null;
-        }
-
-        return support;
     }
 
     private static double cleanComponent(

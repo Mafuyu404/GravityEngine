@@ -30,3 +30,11 @@ config="${mod_id}.mixins.json"
     versionRange="[${minecraft_version}]"
     ordering="NONE"
     side="BOTH"
+
+# Compatibility seams below are verified against this exact optional ABI.
+[[dependencies.${mod_id}]]
+    modId="sable"
+    type="optional"
+    versionRange="[2.0.5]"
+    ordering="AFTER"
+    side="BOTH"

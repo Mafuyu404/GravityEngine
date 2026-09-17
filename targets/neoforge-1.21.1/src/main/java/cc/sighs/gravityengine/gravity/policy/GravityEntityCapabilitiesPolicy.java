@@ -1,8 +1,8 @@
 package cc.sighs.gravityengine.gravity.policy;
 
-import cc.sighs.gravityengine.gravity.model.*;
-import cc.sighs.gravityengine.gravity.minecraft.geometry.CharacterDimensionPolicy;
+import cc.sighs.gravityengine.gravity.kinematic.geometry.CharacterDimensionPolicy;
 import cc.sighs.gravityengine.gravity.minecraft.geometry.GravityEntityGeometry;
+import cc.sighs.gravityengine.gravity.model.GravityEntityCapabilities;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.FlyingMob;
@@ -18,11 +18,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.entity.monster.Shulker;
 import net.minecraft.world.entity.monster.Vex;
-import net.minecraft.world.entity.projectile.AbstractArrow;
-import net.minecraft.world.entity.projectile.FishingHook;
-import net.minecraft.world.entity.projectile.LlamaSpit;
-import net.minecraft.world.entity.projectile.Projectile;
-import net.minecraft.world.entity.projectile.ThrowableProjectile;
+import net.minecraft.world.entity.projectile.*;
 
 /** Classifies entity-kind capability without consulting field presence. */
 public final class GravityEntityCapabilitiesPolicy {
@@ -68,6 +64,9 @@ public final class GravityEntityCapabilitiesPolicy {
             return VANILLA_SPECIAL;
         }
         if (entity instanceof LivingEntity living) {
+            // ArmorStand has a dedicated passive travel/interaction adapter. It shares
+            // the continuous capsule installation contract, not player control input.
+            if (living instanceof ArmorStand stand && stand.isMarker()) return VANILLA_SPECIAL;
             // Current installed dimensions include NeoForge Size overrides.
             // Unsupported ordinary shapes have no custom capability, so the
             // planner never enters an exact-body installation/retry loop.
@@ -127,7 +126,6 @@ public final class GravityEntityCapabilitiesPolicy {
      * adapter yet:
      *
      * <ul>
-     *   <li>{@link ArmorStand}: marker/decoration body; no normal travel.</li>
      *   <li>{@link Shulker}: teleport/levitation movement.</li>
      *   <li>{@link EnderDragon}: phase-driven flight, no travel locomotion.</li>
      *   <li>{@link WitherBoss}: controlled hover flight via MoveControl.</li>
@@ -137,8 +135,7 @@ public final class GravityEntityCapabilitiesPolicy {
      * controller, so the list stays conservative and explicit.
      */
     public static boolean isVanillaSpecialLiving(LivingEntity entity) {
-        return entity instanceof ArmorStand
-                || entity instanceof Shulker
+        return entity instanceof Shulker
                 || entity instanceof EnderDragon
                 || entity instanceof WitherBoss;
     }

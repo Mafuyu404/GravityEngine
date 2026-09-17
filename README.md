@@ -1,84 +1,71 @@
 # GravityEngine
 
-GravityEngine 是面向 Minecraft 的可复用重力与身体姿态运行时 API。
+GravityEngine 是一个面向 Minecraft 的可复用重力与身体姿态运行时。
 
-默认包名与 Gradle group 为 `cc.sighs.gravityengine`，默认 mod id 为 `gravityengine`。
+它的目标不是提供某个特定玩法，而是把任意方向重力、重力场、身体朝向、运动学与相关平台集成整理成可独立复用的基础设施，使内容模组可以在此之上实现星球、空间站、局部重力区域、特殊移动环境等玩法，而不需要重复实现底层重力系统。
 
-`common` 是 Java 21 的 loader-neutral kernel/API，`targets` 保存各加载器与 Minecraft 版本的适配和集成。
+GravityEngine 使用 `cc.sighs.gravityengine` 作为 Java 包与 Gradle group，mod id 为 `gravityengine`。
 
-## IDEA
+## 项目定位
 
-直接打开任意 `targets/<loader>-<version>/` 目录。IDEA 会导入当前 target 与可编辑的 `../../common` 源码模块，只下载该 target 的加载器和 Minecraft 依赖。
+GravityEngine 负责重力与身体姿态的底层语义、数学模型和运行时集成。
 
-## Target
+项目重点包括：
 
-| Target | JDK | 构建命令 |
-| --- | --- | --- |
-| `forge-1.20.1` | JDK 21 | `targets\forge-1.20.1\.\gradlew.bat clean build` |
-| `fabric-1.20.1` | JDK 21 | `targets\fabric-1.20.1\.\gradlew.bat clean build` |
-| `neoforge-1.21.1` | JDK 21 | `targets\neoforge-1.21.1\.\gradlew.bat clean build` |
-| `neoforge-26.1` | JDK 25 | `targets\neoforge-26.1\.\gradlew.bat clean build` |
+- 任意方向和空间变化的重力场；
+- 多个重力场之间的组合与覆盖；
+- 实体在非世界竖直方向下的运动、碰撞与地面语义；
+- 身体姿态、视角与表现层之间的协调；
+- 服务端权威状态、客户端同步与表现；
+- Minecraft 与不同 loader / 游戏版本之间的适配边界。
 
-`neoforge-1.21.1` 是当前权威的已迁移 target；其余 target 仍是待完成的脚手架/移植工程。
+GravityEngine 本身不负责定义具体世界观或内容逻辑。诸如星球质量、空间结构、方块功能、玩法规则和世界生成等，应由上层内容模组提供。
 
-根项目默认只同步 `common`。使用 JDK 21 时可选择性构建前三个 target：
+StarminerR 是独立的内容模组，也是 GravityEngine 的预期消费者之一；它不属于 GravityEngine 的内部命名空间或运行时身份。
 
-```powershell
-.\gradlew.bat '-Ptarget=forge-1.20.1' build
-.\gradlew.bat '-Ptarget=fabric-1.20.1' build
-.\gradlew.bat '-Ptarget=neoforge-1.21.1' build
-.\gradlew.bat -PallTargets=true build
-```
+## 架构
 
-`neoforge-26.1` 因 JDK 25 要求独立构建。
+仓库分为共享内核和平台 target 两层。
 
-## 结构
+`common` 保存不依赖 Minecraft 与 loader 的共享代码，包括公开 API、重力场数学、几何与运动学基础，以及能够跨版本复用的纯 Java 模型。
 
-- `common/`: 不依赖 Minecraft 或任意 loader 的共享 Java 代码。
-- `targets/*`: loader 和版本专属入口、metadata、资源及 API 适配。
+`targets` 保存各 Minecraft 版本和 loader 的适配层，包括 Minecraft 类型桥接、Mixin、事件、网络、渲染、持久化以及版本专属集成。
 
-## 共享资源
+这种结构的目的，是让真正稳定且可复用的重力语义尽量留在共享层，而把 Minecraft 与 loader 的变化限制在对应 target 中。
 
-将所有加载器和版本共用的资源放在 `common/src/main/resources/`。构建任意 target 时，该目录会与 target 自己的 `src/main/resources/` 合并并写入最终 jar。
+## 当前状态
 
-加载器 metadata 仍必须保留在 target 中：Fabric 使用 `fabric.mod.json`，Forge 使用 `META-INF/mods.toml`，NeoForge 使用 `META-INF/neoforge.mods.toml`。
+`neoforge-1.21.1` 是目前的权威迁移 target，也是现阶段 GravityEngine 完整运行时实现的主要参考。
 
-## 本地依赖
+其他 target 用于多版本与多 loader 迁移，并可能处于脚手架或逐步移植状态。它们不应被默认视为与权威 target 具有完全相同的实现完整度。
 
-每个 target 都会自动将自身 `libs/` 目录中的 `*.jar` 作为 `implementation` 依赖。将 jar 放入对应目录后不需要在 `build.gradle` 中逐条声明；`*-sources.jar` 和 `*-javadoc.jar` 会被忽略。
+GravityEngine 的公开 API 边界是有意保持收敛的。即使某些内部类在 Java 层面具有 `public` 可见性，也不代表它们属于稳定的外部兼容性承诺。
 
-```text
-targets/forge-1.20.1/libs/
-targets/fabric-1.20.1/libs/
-targets/neoforge-1.21.1/libs/
-targets/neoforge-26.1/libs/
-```
+## 文档
 
-本地 jar 的传递依赖无法自动推导。若某个 jar 还依赖其他库，需要将这些库也放入同一个 `libs/` 目录，或按常规方式声明依赖。
+更具体的使用方式、开发约束和维护流程放在独立文档中：
 
-## 发布
+- [API 边界与兼容性](docs/API_BOUNDARY.md)
+- [发布流程](docs/PUBLISHING.md)
+- [多版本维护工作流](docs/MAINTENANCE_WORKFLOW.md)
+- [CI target 发现规则](docs/CI_TARGET_DISCOVERY.md)
+- [Minecraft 版本迁移差异](docs/version-differences/README.md)
 
-每个 target 都提供 `publishMods`，可手动发布其自身的产物至 CurseForge 与 Modrinth。两个平台的项目 ID 是所有 target 共用的非敏感信息，在根 `gradle.properties` 中取消注释并填写：
+仓库级开发规则见 [AGENTS.md](AGENTS.md)。
 
-```properties
-publish_curseforge_project_id=你的CurseForge项目ID
-publish_modrinth_project_id=你的Modrinth项目ID
-```
+## 开发原则
 
-token 只从环境变量读取，不要写入仓库。PowerShell 示例：
+GravityEngine 优先保持以下边界：
 
-```powershell
-$env:CURSEFORGE_TOKEN = '...'
-$env:MODRINTH_TOKEN = '...'
-$env:PUBLISH_CHANGELOG = '本次版本的更新说明' # 可选
+- 重力数学与 Minecraft 状态解耦；
+- field evaluator 与 field 注册、生命周期和组合策略解耦；
+- 共享内核与平台集成解耦；
+- 物理状态与客户端表现解耦；
+- 内容模组与底层运行时解耦；
+- 各 Minecraft 版本之间通过明确的 target 适配，而不是在共享内核中堆叠版本特判。
 
-cd targets\forge-1.20.1
-.\gradlew.bat publishMods
-```
+这些原则用于降低长期迁移成本，并避免上层内容逻辑反向侵入 GravityEngine 的底层 API。
 
-将目录替换为其他 target 即可单独发布对应加载器和 Minecraft 版本。Fabric 会上传重映射后的 jar；Forge 与 NeoForge 上传各自的最终 jar。
+## License
 
-## 版本参考
-
-- [Minecraft 1.20.1、1.21.1、26.1 完整迁移差异参考](docs/version-differences/README.md)
-- [多版本日常维护工作流](docs/MAINTENANCE_WORKFLOW.md)
+GravityEngine 使用 GNU GPL 3.0 许可证。第三方或历史来源代码的额外许可说明保存在 `docs/licenses/` 中。

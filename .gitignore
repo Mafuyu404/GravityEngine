@@ -1,7 +1,14 @@
 .gradle/
+.tmp/
 build/
 run/
 out/
 *.iml
 .idea/
-
+targets/*/logs/
+logs/
+.VSCodeCounter/
+docs/*
+!docs/SABLE_COMPAT_CHECKLIST.md
+!docs/AERONAUTICS_COMPAT_REVIEW.md
+!docs/API_BOUNDARY.md
