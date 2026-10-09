@@ -21,10 +21,10 @@ public final class BlockContactResolver {
 
     /** Plot positions are absolute Level storage positions, not parent-world positions.
      * The optional rigid pose maps scaled pivot-relative geometry to world space. */
-    public record Resolved(BlockPos position, BlockState state, CollisionContext context,
+    public record Resolved(net.minecraft.world.level.Level level, BlockPos position, BlockState state, CollisionContext context,
                            GravitySupportContact contact, Optional<RigidPose> rigidPose) {
         public BlockMovementMaterialSnapshot material(Entity entity) {
-            return new BlockMovementMaterialSnapshot(state.getFriction(entity.level(), position, entity),
+            return new BlockMovementMaterialSnapshot(state.getFriction(level, position, entity),
                     state.getBlock().getSpeedFactor(), state.is(Blocks.WATER), state.is(Blocks.BUBBLE_COLUMN));
         }
     }
@@ -134,7 +134,8 @@ public final class BlockContactResolver {
     public static Optional<Resolved> resolve(Entity entity, GravitySupportContact contact) {
         var identity = contact.faceIdentity();
         if (identity == null) return Optional.empty();
-        if (identity.dynamicSupport()) return SableMovementCompatibility.resolveBlockContact(entity, contact);
+        if (identity.dynamicSupport()) return SableMovementCompatibility.resolveBlockContact(entity, contact)
+                .or(() -> cc.sighs.gravityengine.gravity.integration.compat.create.CreateCompatibility.resolve(entity, contact));
         if (!identity.staticBlockSupport()) return Optional.empty();
         var pos = MinecraftMathAdapter.toBlockPos(identity.block());
         if (!entity.level().hasChunkAt(pos)) return Optional.empty();
@@ -145,7 +146,7 @@ public final class BlockContactResolver {
                 .map(b -> b.move(pos)).anyMatch(b ->
                         cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter
                                 .toAabb3d(b).equals(identity.voxelPiece()));
-        return valid ? Optional.of(new Resolved(pos, state, context, contact, Optional.empty())) : Optional.empty();
+        return valid ? Optional.of(new Resolved(entity.level(), pos, state, context, contact, Optional.empty())) : Optional.empty();
     }
 
     public static BlockMovementMaterialSnapshot supportMaterial(Entity entity) {

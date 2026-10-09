@@ -440,3 +440,71 @@ Command (Java 21.0.11, primary target wrapper; NeoForge 21.1.256):
 diagnostics are repaired and verified above. The identified CP1 runtime blocker
 for CP2 is resolved in this working tree. This does not reclassify historical
 commits as complete or extend acceptance to the explicitly unverified domains.
+
+## 2026-10-09: composed rigid trajectory groundwork (partial compatibility task)
+
+The requested complete NeoForge 21.1.256, Sable 2.0.6, Create 6.0.10 and
+Aeronautics Bundled 1.3.2 integration is **not complete**. This checkpoint
+implements only its shared trajectory foundation. No target adapter or Mixin was
+changed, and no Create/Aeronautics runtime profile was added.
+
+`RigidTrajectory` is an internal sealed immutable Java 17 contract implemented by
+the existing single-body snapshot and new `ComposedRigidTrajectory`. Parent and
+child captures must cover the same tick and interval. The producer owns composite
+revision/continuity invalidation; these records are transient operation evidence,
+not another physics, persistence or network owner. Collision publications, sweeps,
+support carry and release velocity consume the same trajectory. Composite point
+velocity sums parent and transformed child velocity once. Nested enclosures are
+conservative; support chord error uses an acceleration bound including Coriolis
+acceleration. Existing single-body paths retain their optimized bounds. The
+fixed-axis collision clearance proof is used only for single-body snapshots.
+Supported consumer APIs and persistence formats are unchanged.
+
+Seven focused tests cover composed pose/velocity, material-corner swept enclosure
+in a moving observer frame, speed bounds, full-turn child-origin carry despite
+equal endpoints, translation ownership, invalid time coverage, mixed-axis capsule
+and box collision, and chord/acceleration bounds with normalized-linear rotation.
+Existing tests were retained. Work budgets and numerical thresholds were not
+weakened. Conservative composition may still reject work exceeding those budgets;
+whole-game performance has not been measured.
+
+Fresh verification, run sequentially with the target-owned wrappers:
+
+```powershell
+# Java 21.0.11 launcher; Java 17 common production toolchain
+./targets/neoforge-1.21.1/gradlew.bat -p common test --console plain --no-daemon
+./targets/neoforge-1.21.1/gradlew.bat -p targets/neoforge-1.21.1 build dynamicsCoreVerification sableCompatibilityVerification --console plain --no-daemon
+./targets/forge-1.20.1/gradlew.bat -p targets/forge-1.20.1 build --console plain --no-daemon
+# Java 25.0.3 launcher
+./targets/fabric-1.20.1/gradlew.bat -p targets/fabric-1.20.1 build --console plain --no-daemon
+./targets/neoforge-26.1/gradlew.bat -p targets/neoforge-26.1 build --console plain --no-daemon
+```
+
+- **PASS:** common 434 tests and primary target 74 tests, zero failures, errors or
+  skipped tests. The final seventh regression was added after the primary server
+  run and passed in the subsequent common run and cross-target builds.
+- **PASS:** primary build, JVM controls, consumer-import guard and finished-JAR API
+  artifact verification; all three other target builds. Scaffold builds do not
+  establish other-loader gameplay parity.
+- **PASS:** fresh `dynamicsCoreVerification` and strict
+  `sableCompatibilityVerification`. The ordinary result is `PASS 2264
+  sable=SKIPPED (not installed)`; the installed result is `PASS contact
+  compatibility 2265 sable=PASS 2.0.6`, with all eleven required Sable markers.
+  Each gate deleted its previous result files before launching.
+- Evidence: `build/composed-trajectory-common.log`,
+  `build/composed-trajectory-primary-final.log`, and
+  `build/composed-trajectory-{forge-1.20.1,fabric-1.20.1,neoforge-26.1}.log`.
+  An intermediate test compilation failed because of a test variable typo; it
+  was corrected before the final common run. No production failure was excluded.
+- **NOT RUN:** full Create/Aeronautics servers, clients, multiplayer, sparse/fleet
+  baseline comparisons and packaged-client smoke. Existing Sable-only gates do
+  not exercise the new composite publication through a real contraption adapter.
+- **BLOCKED acceptance:** the requested integration is unfinished. Contraption
+  publications, actual substep motion capture, stable plot rebasing, conservative
+  discovery, native chunk/assembly lifecycle coverage, swimming/climbing/scaffold
+  movement, boarding/dismount/interaction, distributed attached masses, sparse
+  mass caching, balloon/floating-block gravity operands and runtime profiles still
+  need implementation and their required client/multiplayer/performance evidence.
+
+Native Rapier water buoyancy and native Sable rigid integration remain unchanged.
+This checkpoint must not be used as a complete compatibility acceptance report.

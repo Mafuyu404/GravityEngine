@@ -71,6 +71,7 @@ public final class ControlBoundaryChecks {
     }
 
     private static void started(ServerStartedEvent event) {
+        if (Boolean.getBoolean("gravityengine.multiplayerVerification")) return;
         if (!event.getServer().isDedicatedServer()) return;
         PassiveSchedulingChecks.start(event.getServer(), () -> {
             ApiBoundaryChecks.run(event.getServer().overworld());
@@ -96,6 +97,7 @@ public final class ControlBoundaryChecks {
             RigidMovementChecks.run(level);
             BodyAuthorityChecks.run(level);
             MovementOwnershipChecks.run(level);
+            EnvironmentMovementChecks.run(level);
             BodyTransitionChecks.run(level);
             MovementCorrectionAuthorityChecks.run(level);
             PacketJumpSupportChecks.run(level);
@@ -113,6 +115,23 @@ public final class ControlBoundaryChecks {
                 System.out.println("SABLE_CHECKS_SKIPPED not installed/available");
                 if (Boolean.getBoolean("gravityengine.requireSableChecks"))
                     throw new AssertionError("Strict Sable checks require the pinned, initialized Sable runtime");
+            }
+            var compatibilityProfile = System.getProperty("gravityengine.compatibilityProfile", "sable");
+            if (!compatibilityProfile.equals("sable")) {
+                var create = net.neoforged.fml.ModList.get().getModContainerById("create").orElseThrow();
+                var version = create.getModInfo().getVersion().toString();
+                check(version.equals(System.getProperty("gravityengine.expectedCreateVersion")), "pinned Create version");
+                var completed = CreateRuntimeChecks.run(level);
+                java.nio.file.Files.writeString(java.nio.file.Path.of("create-checks-result.txt"),
+                        "PASS Create " + version + "\n" + String.join("\n", new java.util.TreeSet<>(completed)) + "\n");
+            }
+            if (compatibilityProfile.equals("aeronautics")) {
+                var version = net.neoforged.fml.ModList.get().getModContainerById("aeronautics").orElseThrow()
+                        .getModInfo().getVersion().toString();
+                check(version.equals(System.getProperty("gravityengine.expectedAeronauticsVersion")), "pinned Aeronautics version");
+                var completed = AeronauticsRuntimeChecks.run(level);
+                java.nio.file.Files.writeString(java.nio.file.Path.of("aeronautics-checks-result.txt"),
+                        "PASS Aeronautics " + version + "\n" + String.join("\n", new java.util.TreeSet<>(completed)) + "\n");
             }
             for (Vec3 down : new Vec3[]{new Vec3(0, -1, 0), new Vec3(1, 0, 0),
                     new Vec3(0, 1, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1),

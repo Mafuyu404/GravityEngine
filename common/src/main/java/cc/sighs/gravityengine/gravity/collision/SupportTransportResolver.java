@@ -15,7 +15,7 @@ import java.util.Optional;
  * post-processing hack and it does not depend on an optional compatibility
  * layer telling it a "remaining motion": translation, rotation and the
  * resulting surface-point velocity are derived from the engine's own
- * {@link RigidMotionSnapshot} publication.</p>
+ * {@link RigidTrajectory} publication.</p>
  *
  * <p>Invariants enforced here:</p>
  *
@@ -117,7 +117,7 @@ public final class SupportTransportResolver {
             return Optional.empty();
         }
 
-        RigidMotionSnapshot motion = found.get().motion();
+        RigidTrajectory motion = found.get().motion();
         if (found.get().providerRegistrationEpoch()
                 != support.identity().providerRegistrationEpoch()
                 || motion.continuityEpoch()
@@ -217,7 +217,7 @@ public final class SupportTransportResolver {
             return Optional.empty();
         }
 
-        RigidMotionSnapshot motion = obstacle.motion();
+        RigidTrajectory motion = obstacle.motion();
         if (motion.continuityEpoch()
                 != support.identity().continuityEpoch()) {
             return Optional.empty();
@@ -286,7 +286,7 @@ public final class SupportTransportResolver {
         Objects.requireNonNull(support, "support");
         Objects.requireNonNull(obstacle, "obstacle");
         Objects.requireNonNull(time, "time");
-        RigidMotionSnapshot motion = obstacle.motion();
+        RigidTrajectory motion = obstacle.motion();
         if (support.staticSupport()
                 || !support.identity().obstacleIdentity().matches(obstacle)
                 || motion.tick() != time.gameTick()

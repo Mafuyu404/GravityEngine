@@ -544,10 +544,11 @@ public final class GravityOperation implements AutoCloseable {
         boolean exactContactOwner =
                 BodyRepresentation.requiresReferenceGeometry(selectedFrame);
         if (!exactContactOwner) {
-            // CHARACTER may still use Vanilla AABB collision. Vanilla owns
-            // grounded/traction for that route; empty means no override.
+            // Native AABB collision retains its gameplay traction. Character
+            // controls still need physical support evidence to select free flight.
+            var support = reverifyStepStartSupport(e, selectedFrame, scene, queryContext, null);
             controlSupport = Optional.empty();
-            controlTerminalSupport = Optional.empty();
+            controlTerminalSupport = support.indeterminate()?Optional.empty():Optional.of(support.support().isPresent());
         } else {
             // Geometry history cannot authorize pre-travel friction. Even a
             // retained endpoint is revalidated on the prepared body and scene.

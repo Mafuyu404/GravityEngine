@@ -46,7 +46,7 @@ import java.util.Optional;
  */
 public final class GravityOperationState {
     /** Locomotion lifecycle, independent of gravity assignment and installed body geometry. */
-    public enum MovementMode { GROUND_AIR, ELYTRA, NATIVE_FALLBACK }
+    public enum MovementMode { GROUND_AIR, SWIMMING, CLIMBING, ELYTRA, NATIVE_FALLBACK }
     private MovementMode movementMode = MovementMode.GROUND_AIR;
 
     public MovementMode movementMode() { return movementMode; }

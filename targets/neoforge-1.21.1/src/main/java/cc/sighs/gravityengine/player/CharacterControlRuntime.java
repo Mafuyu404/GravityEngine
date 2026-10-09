@@ -196,6 +196,9 @@ public final class CharacterControlRuntime {
                         state, eligible, groundFacts, frame, config));
 
         if (cache.consumeSprintIntent(logicalStep)) {
+            if (cc.sighs.gravityengine.gravity.debug.GravityDebugLog.shouldLog(player))
+                cc.sighs.gravityengine.gravity.debug.GravityDebugLog.log(player, "sprint-intent-consumed",
+                        "eligible=%s terminal=%s state=%s strength=%s", swimEligible, terminalSupportAtStepStart, state, frame.strength());
             mode.pressSprintIntent(swimEligible);
         }
 

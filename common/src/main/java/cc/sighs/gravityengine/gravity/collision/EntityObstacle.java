@@ -26,7 +26,7 @@ public record EntityObstacle(DynamicCollisionObstacleSnapshot snapshot, boolean 
     public long sourceId() { return snapshot.sourceId(); }
     public long primitiveId() { return snapshot.primitiveId(); }
     public String providerNamespace() { return snapshot.providerNamespace(); }
-    public RigidMotionSnapshot motion() { return snapshot.motion(); }
+    public RigidTrajectory motion() { return snapshot.motion(); }
     public cc.sighs.gravityengine.math.geometry.Aabb3d bounds() { return snapshot.initialBounds(); }
     public CollisionBody exactBodyAt(double time) { return snapshot.exactBodyAt(time); }
     public OrientedBox bodyAt(double time) { return snapshot.bodyAt(time); }

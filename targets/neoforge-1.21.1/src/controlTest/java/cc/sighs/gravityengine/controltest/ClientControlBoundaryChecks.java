@@ -35,6 +35,7 @@ public final class ClientControlBoundaryChecks {
 
     @SubscribeEvent
     public static void loaded(ClientTickEvent.Post event) {
+        if (Boolean.getBoolean("gravityengine.multiplayerVerification")) return;
         var minecraft = Minecraft.getInstance();
         if (completed || minecraft.getOverlay() != null) return;
         try {
@@ -232,7 +233,11 @@ public final class ClientControlBoundaryChecks {
         var control = (cc.sighs.gravityengine.gravity.minecraft.access.CharacterControlAccess) player;
         var plan = control.gravityengine$characterControl().at(player.tickCount);
         if (plan == null || plan.ownsDescendInput() != swim)
-            throw new AssertionError("same-step swim plan at fixture tick " + ticks + ": " + plan);
+            throw new AssertionError("same-step swim plan at fixture tick " + ticks + ": " + plan
+                    + " endpoint=" + cc.sighs.gravityengine.gravity.minecraft.access.GravityEntityAccess.cast(player)
+                    .gravityengine$gravityComponent().operationState().completedEndpointGround()
+                    + " velocity=" + player.getDeltaMovement()
+                    + " mode=" + control.gravityengine$characterMode().swimActive());
         if (!((cc.sighs.gravityengine.gravity.minecraft.access.CharacterControlAccess.LocalInput) player).gravityengine$descendHeld())
             throw new AssertionError("held physical descend lost");
         if (player.input.shiftKeyDown == swim || player.isShiftKeyDown() == swim

@@ -4,7 +4,8 @@ import cc.sighs.gravityengine.api.math.Vec3d;
 import cc.sighs.gravityengine.math.Quatd;
 import java.util.Objects;
 
-/** Immutable body-local to world transform; center is the publisher's COM reference. */
+/** Immutable local-to-parent transform; center is the origin of the captured
+ * local basis, which need not be the physical center of mass. */
 public record RigidPose(double x, double y, double z, OrthonormalFrame3d orientation) {
     public RigidPose {
         Objects.requireNonNull(orientation, "orientation");

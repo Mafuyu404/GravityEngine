@@ -16,7 +16,8 @@ public record GravityTravelContext(
         cc.sighs.gravityengine.gravity.integration.GravityOperation operation,
         CharacterControlPlan characterPlan,
         TravelCapturePlan capturePlan,
-        cc.sighs.gravityengine.look.SemanticLookSnapshot look
+        cc.sighs.gravityengine.look.SemanticLookSnapshot look,
+        MovementEnvironmentCapture.Snapshot environment
 ) implements AutoCloseable {
     public GravityTravelContext {
         Objects.requireNonNull(entity, "entity");
@@ -24,6 +25,7 @@ public record GravityTravelContext(
         Objects.requireNonNull(operation, "operation");
         Objects.requireNonNull(characterPlan, "characterPlan");
         Objects.requireNonNull(look, "look");
+        Objects.requireNonNull(environment, "environment");
     }
 
     /** Installed-geometry frame for collision, support and local velocity carriers. */

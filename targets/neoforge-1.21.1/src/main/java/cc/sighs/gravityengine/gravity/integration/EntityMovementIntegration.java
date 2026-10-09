@@ -750,6 +750,21 @@ public final class EntityMovementIntegration {
         var evidence = MovementProvenanceIntegration.capture(entity, type, movement);
         try (var ignored = runtime.openMovementEvidence(evidence)) {
             vanillaMove.run();
+            if (route == GravityCollisionRoute.VANILLA && runtime.discontinuityDestination() == null) {
+                // A native-compatible collider can still have GE character controls.
+                // Observe its actual endpoint in the captured scene; vanilla onGround
+                // is a gameplay carrier and cannot authorize free-flight activation.
+                var operation = runtime.collisionOperation();
+                try {
+                    runtime.setEndpointSupportOverride(cc.sighs.gravityengine.gravity.collision.GravityGroundProbe.probe(
+                            GravityEntityGeometry.body(entity), operation.frame(), operation.scene(),
+                            operation.time().intervalTicks(), operation.geometryContext()));
+                } catch (CollisionSceneCoverageException
+                        | cc.sighs.gravityengine.gravity.collision.CollisionComplexityLimitException unavailable) {
+                    runtime.markEndpointSupportIndeterminate();
+                    cc.sighs.gravityengine.gravity.debug.CollisionCoverageDiagnostics.report(entity, unavailable);
+                }
+            }
         }
     }
 

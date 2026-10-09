@@ -40,17 +40,20 @@ final class CapsuleRigidObstacleSweep {
         // The rigid body's projection on its rotation axis is invariant.
         // A separating plane there plus non-entering relative translation
         // proves the complete interval clear, including tangent floor carry.
-        Vec3d axis = new Vec3d(obstacle.motion().ax(), obstacle.motion().ay(), obstacle.motion().az()).normalized();
-        var box = obstacle.bodyAt(start);
-        double separation = body.center().subtract(box.center()).dot(axis);
-        double capsuleRadius = body.radius() + body.halfSegmentLength() * Math.abs(body.axis().dot(axis));
-        double boxRadius = box.halfExtents().x() * Math.abs(box.orientation().axisX().dot(axis))
-                + box.halfExtents().y() * Math.abs(box.orientation().axisY().dot(axis))
-                + box.halfExtents().z() * Math.abs(box.orientation().axisZ().dot(axis));
-        double sign = separation < 0 ? -1 : 1;
-        if (Math.abs(separation) - capsuleRadius - boxRadius >= -cc.sighs.gravityengine.math.geometry.GeometryTolerance.TOUCHING
-                && movement.subtract(obstacle.motion().displacementForInterval().multiply(duration)).dot(axis) * sign >= 0)
-            return new SweepContactResult(initial, List.of());
+        var single = obstacle.motion().invariantAxisMotion();
+        if (single != null) {
+            Vec3d axis = new Vec3d(single.ax(), single.ay(), single.az()).normalized();
+            var box = obstacle.bodyAt(start);
+            double separation = body.center().subtract(box.center()).dot(axis);
+            double capsuleRadius = body.radius() + body.halfSegmentLength() * Math.abs(body.axis().dot(axis));
+            double boxRadius = box.halfExtents().x() * Math.abs(box.orientation().axisX().dot(axis))
+                    + box.halfExtents().y() * Math.abs(box.orientation().axisY().dot(axis))
+                    + box.halfExtents().z() * Math.abs(box.orientation().axisZ().dot(axis));
+            double sign = separation < 0 ? -1 : 1;
+            if (Math.abs(separation) - capsuleRadius - boxRadius >= -cc.sighs.gravityengine.math.geometry.GeometryTolerance.TOUCHING
+                    && movement.subtract(single.displacementForInterval().multiply(duration)).dot(axis) * sign >= 0)
+                return new SweepContactResult(initial, List.of());
+        }
         if(initial==SweepInitialState.TOUCHING) {
             var relative=movement.fma(-duration*obstacle.motion().intervalTicks(),
                     obstacle.velocityAt(pair.pointOnObstacle(),start));

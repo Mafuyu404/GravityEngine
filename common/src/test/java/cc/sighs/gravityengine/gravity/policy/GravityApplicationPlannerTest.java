@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class GravityApplicationPlannerTest {
     @Test
-    void activeCharacterFallsBackToVanillaForActualFluidLocomotion() {
+    void activeCharacterRetainsAssignedGravityForActualFluidLocomotion() {
         GravityApplicationPlanner.EntityState state =
                 new GravityApplicationPlanner.EntityState(
                         false, false, false, false, false,
@@ -25,12 +25,12 @@ class GravityApplicationPlannerTest {
                 false,
                 state);
 
-        assertEquals(GravityApplicationPlan.Kind.VANILLA, plan.kind());
-        assertEquals(GravityAccelerationMode.NONE, plan.accelerationMode());
+        assertEquals(GravityApplicationPlan.Kind.CHARACTER, plan.kind());
+        assertEquals(GravityAccelerationMode.FIELD, plan.accelerationMode());
     }
 
     @Test
-    void activeCharacterFallsBackToVanillaForSwimmingPresentation() {
+    void swimmingPresentationDoesNotRevokePhysicalGravity() {
         GravityApplicationPlanner.EntityState state =
                 new GravityApplicationPlanner.EntityState(
                         false, false, false, false, false,
@@ -45,7 +45,7 @@ class GravityApplicationPlannerTest {
                 false,
                 state);
 
-        assertEquals(GravityApplicationPlan.Kind.VANILLA, plan.kind());
+        assertEquals(GravityApplicationPlan.Kind.CHARACTER, plan.kind());
     }
 
     @Test

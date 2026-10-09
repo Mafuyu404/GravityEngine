@@ -211,7 +211,8 @@ final class ClientMovementOwnershipChecks {
         check(plan.movementMode()
                         == GravityOperationState.MovementMode.NATIVE_FALLBACK,
                 "client locomotion mode is NATIVE_FALLBACK actual="
-                        + plan.movementMode());
+                        + plan.movementMode()+" flying="+player.getAbilities().flying
+                        +" ground="+player.onGround()+" position="+player.position());
         check(plan.installedRepresentation()
                         == BodyRepresentation.EXACT_BODY,
                 "client keeps the installed exact body");
@@ -221,8 +222,8 @@ final class ClientMovementOwnershipChecks {
                         == GravityCollisionRoute.EXACT_BODY,
                 "committed collision route stays engine-owned");
         check(GravityInfluencePolicy.committedPlan(player).kind()
-                        == GravityApplicationPlan.Kind.VANILLA,
-                "locomotion fallback is the committed Vanilla application plan");
+                        == GravityApplicationPlan.Kind.CHARACTER,
+                "deferred native handoff retains the application owning the installed exact body");
         check(GravityInfluencePolicy.usesCustomBody(player),
                 "the exact body is still physically installed");
         check(runtime.bodyShapeRevision() == shapeRevision,
@@ -426,6 +427,12 @@ final class ClientMovementOwnershipChecks {
     private static void requestNativeFallback(Minecraft mc, UUID id) {
         ServerPlayer player = mc.getSingleplayerServer().getPlayerList()
                 .getPlayer(id);
+        // Native LocalPlayer ends flight on landing. Start the deferred handoff
+        // airborne so that the fixture's exclusion survives its observation window.
+        player.setDeltaMovement(Vec3.ZERO);
+        player.connection.teleport(player.getX(), player.getY()+.1, player.getZ(), player.getYRot(), player.getXRot());
+        player.setOnGround(false);
+        player.getAbilities().mayfly = true;
         player.getAbilities().flying = true;
         player.onUpdateAbilities();
         GravitySyncService.syncPlayer(player);
@@ -461,6 +468,7 @@ final class ClientMovementOwnershipChecks {
             heldBarrier = null;
         }
         player.getAbilities().flying = false;
+        player.getAbilities().mayfly = false;
         player.onUpdateAbilities();
         player.setDeltaMovement(Vec3.ZERO);
         player.connection.teleport(8.5D, 300.0D, 8.5D, 0, 0);

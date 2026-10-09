@@ -4,6 +4,30 @@ Target: Minecraft 1.21.1, NeoForge 21.1.256, Sable **2.0.6**, Java 21.
 This is an assessment of the existing adapter, not a claim of complete Sable
 feature parity. Other loader targets do not contain this integration.
 
+## Composed-motion implementation checkpoint
+
+The common collision kernel now accepts an internal immutable `RigidTrajectory`
+for both single-body motion and captured parent/child composition. Collision
+poses, swept enclosures, contact velocity and support transport use that same
+trajectory. Composite velocity includes both components once; chord subdivision
+uses a conservative acceleration bound including the Coriolis term. The
+single-axis clearance shortcut is restricted to single-body publications.
+
+This is partial implementation of the requested NeoForge 21.1.256 / Sable 2.0.6 /
+Create 6.0.10 / Aeronautics Bundled 1.3.2 work, **not complete compatibility**.
+The Sable adapter still publishes single-body endpoint motion and rejects
+collidable contraptions. Plot rebasing, sampled substep motion, lifecycle coverage,
+swimming/climbing/scaffolding, vehicle interactions, sparse attached-mass capture,
+lift operands and the three runtime profiles still need implementation. Existing
+fixed-reach and unsupported-geometry failures have not been removed. Native
+character/vehicle coupling still needs its requested audit.
+
+Client/multiplayer acceptance and comparative performance measurements have not
+been run for this checkpoint. Full-stack acceptance remains blocked by unfinished
+integration and missing required runtime evidence. See the new checkpoint in
+[REFACTOR_STATUS.md](REFACTOR_STATUS.md) for fresh commands and results; historical
+PASS results below do not certify the requested full stack.
+
 ## Verdict
 
 **PASS within the exercised server scope; compatibility is incomplete.**

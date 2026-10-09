@@ -18,7 +18,12 @@ import net.neoforged.neoforge.event.level.LevelEvent;
 
 public final class GravityEvents {
     @SubscribeEvent
+    public static void onEntityJoin(net.neoforged.neoforge.event.entity.EntityJoinLevelEvent event) {
+        cc.sighs.gravityengine.gravity.integration.compat.create.CreateCompatibility.joined(event.getEntity());
+    }
+    @SubscribeEvent
     public static void onEntityLeave(net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent event) {
+        cc.sighs.gravityengine.gravity.integration.compat.create.CreateCompatibility.left(event.getEntity());
         if (event.getEntity() instanceof ServerPlayer player) {
             GravityEntityAccess.cast(player).gravityengine$gravityComponent().state().advanceBodyPublicationEpoch();
         }
@@ -115,6 +120,7 @@ public final class GravityEvents {
                     .remove(level);
             RigidCollisionPublicationRegistry.clear(level);
             cc.sighs.gravityengine.gravity.integration.compat.sable.SableMovementCompatibility.unload(level);
+            cc.sighs.gravityengine.gravity.integration.compat.create.CreateCompatibility.unload(level);
             GravityFieldRuntime.remove(level);
         }
     }

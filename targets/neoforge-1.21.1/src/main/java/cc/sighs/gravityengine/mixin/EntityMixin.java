@@ -995,7 +995,7 @@ public abstract class EntityMixin implements GravityEntityAccess {
         }
         ContactVelocityIntegration.prepareStepVelocity(entity);
         cc.sighs.gravityengine.gravity.integration.BlockContactResolver.supportBlock(entity)
-                .ifPresent(c -> original.call(c.state().getBlock(), level, c.position(), c.state(), entity));
+                .ifPresent(c -> original.call(c.state().getBlock(), c.level(), c.position(), c.state(), entity));
     }
 
     @Inject(method = "baseTick", at = @At("HEAD")) private void gravityengine$baseTick(CallbackInfo ci) { GravityEntityTickLifecycle.onBaseTick((Entity)(Object)this); }

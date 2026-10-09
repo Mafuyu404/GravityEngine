@@ -13,7 +13,7 @@ import java.util.Objects;
  * Revision identifies the publication; continuityEpoch changes on replacement/discontinuity. */
 public record RigidMotionSnapshot(cc.sighs.gravityengine.math.geometry.RigidPose start, double dx, double dy, double dz,
                                   double ax, double ay, double az, long tick, long revision, long continuityEpoch,
-                                  double intervalTicks, boolean normalizedLinearRotation) {
+                                  double intervalTicks, boolean normalizedLinearRotation) implements RigidTrajectory {
     public RigidMotionSnapshot(cc.sighs.gravityengine.math.geometry.RigidPose start,
             double dx, double dy, double dz, double ax, double ay, double az,
             long tick, long revision, long continuityEpoch, double intervalTicks) {
@@ -38,6 +38,7 @@ public record RigidMotionSnapshot(cc.sighs.gravityengine.math.geometry.RigidPose
                 angularDisplacement.y(), angularDisplacement.z(), tick, revision, continuityEpoch, intervalTicks);
     }
     public Vec3d displacementForInterval() { return new Vec3d(dx, dy, dz); }
+    @Override public RigidMotionSnapshot invariantAxisMotion() { return this; }
     public boolean rotating() { return ax != 0 || ay != 0 || az != 0; }
     public boolean moving() { return rotating() || dx != 0 || dy != 0 || dz != 0; }
     public cc.sighs.gravityengine.math.geometry.RigidPose poseAt(double t) {
@@ -75,7 +76,7 @@ public record RigidMotionSnapshot(cc.sighs.gravityengine.math.geometry.RigidPose
     /** Proof enclosure in a translating observer's coordinates. Subtracting the
      * observer's interval displacement preserves relative-time correlation at
      * initially touching/outward contacts. It does not change the publication. */
-    OrientedBox envelope(OrientedBox local, double lo, double hi, Vec3d observerDisplacement) {
+    public OrientedBox envelope(OrientedBox local, double lo, double hi, Vec3d observerDisplacement) {
         requireTime(lo); requireTime(hi);
         if (hi < lo) throw new IllegalArgumentException("reversed rigid interval");
         OrientedBox first = bodyAt(local, lo);
@@ -149,6 +150,20 @@ public record RigidMotionSnapshot(cc.sighs.gravityengine.math.geometry.RigidPose
     public double maximumAngularRate() {
         double angle = new Vec3d(ax, ay, az).length();
         return normalizedLinearRotation ? 4 * Math.tan(angle * .25) : angle;
+    }
+
+    @Override public double maximumPointAcceleration(OrientedBox local) {
+        double rate = maximumAngularRate();
+        double angularAcceleration = 0;
+        if (normalizedLinearRotation) {
+            double angle = new Vec3d(ax, ay, az).length();
+            double cosine = Math.cos(angle * .5);
+            double minimumDenominator = (1 + cosine) * .5;
+            angularAcceleration = 4 * Math.sin(angle * .5) * (1 - cosine)
+                    / (minimumDenominator * minimumDenominator);
+        }
+        return (rate * rate + angularAcceleration)
+                * (local.center().length() + local.halfExtents().length());
     }
 
     private static void requireTime(double t) {

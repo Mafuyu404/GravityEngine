@@ -48,13 +48,16 @@ final class RigidObstacleSweep {
         // entering, it proves clearance for the WHOLE interval. This includes
         // tangent travel on a yawing floor: a conservative angular envelope's
         // roundoff must not manufacture a blocking zero-TOI floor contact.
-        Vec3d axis = new Vec3d(obstacle.motion().ax(), obstacle.motion().ay(), obstacle.motion().az()).normalized();
-        var invariantPlane = cc.sighs.gravityengine.math.geometry.ObbSat.overlapAlong(
-                context.body(actor), context.orientedObstacle(obstacle.bodyAt(start), Vec3d.ZERO), axis);
-        if (invariantPlane.hasNormal() && invariantPlane.penetration() <= GeometryTolerance.TOUCHING
-                && movement.subtract(obstacle.motion().displacementForInterval().multiply(duration))
-                    .dot(invariantPlane.normal()) >= 0) {
-            return new SweepContactResult(initial, List.of());
+        var single = obstacle.motion().invariantAxisMotion();
+        if (single != null) {
+            Vec3d axis = new Vec3d(single.ax(), single.ay(), single.az()).normalized();
+            var invariantPlane = cc.sighs.gravityengine.math.geometry.ObbSat.overlapAlong(
+                    context.body(actor), context.orientedObstacle(obstacle.bodyAt(start), Vec3d.ZERO), axis);
+            if (invariantPlane.hasNormal() && invariantPlane.penetration() <= GeometryTolerance.TOUCHING
+                    && movement.subtract(single.displacementForInterval().multiply(duration))
+                        .dot(invariantPlane.normal()) >= 0) {
+                return new SweepContactResult(initial, List.of());
+            }
         }
         if (initial == SweepInitialState.TOUCHING) {
             var contacts = solve.contactsForNormal(0, overlap, overlap.normal(), true);

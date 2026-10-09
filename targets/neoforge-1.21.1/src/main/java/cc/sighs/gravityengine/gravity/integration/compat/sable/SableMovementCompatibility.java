@@ -33,6 +33,23 @@ public final class SableMovementCompatibility {
     public static boolean available() {
         return AVAILABLE;
     }
+    public static Vec3 projectOut(Entity actor,Vec3 position) {
+        return AVAILABLE?dev.ryanhcode.sable.Sable.HELPER.projectOutOfSubLevel(actor.level(),position):position;
+    }
+
+    public static void captureEnvironment(cc.sighs.gravityengine.gravity.integration.MovementEnvironmentCapture.Builder result) {
+        if (AVAILABLE) SableRigidCollisionProvider.captureEnvironment(result);
+    }
+    public static boolean fluidOccluded(Entity actor) {
+        return AVAILABLE && SableRigidCollisionProvider.fluidOccluded(actor);
+    }
+
+    public record ParentMotion(cc.sighs.gravityengine.gravity.collision.RigidTrajectory trajectory,
+                               cc.sighs.gravityengine.api.math.Vec3d plotOrigin, java.util.UUID identity) {}
+    public static java.util.Optional<ParentMotion> parentMotion(Entity entity,
+            cc.sighs.gravityengine.gravity.kinematic.KinematicStepContext time) {
+        return AVAILABLE ? SableRigidCollisionProvider.parentMotion(entity, time) : java.util.Optional.empty();
+    }
 
     public static boolean isPlotPosition(net.minecraft.world.level.Level level, net.minecraft.core.BlockPos pos) {
         return AVAILABLE && SablePlotCoordinates.contains(level, pos);

@@ -22,7 +22,7 @@ public final class GravityApplicationPlanner {
     /**
      * Pure current-entity-state snapshot used by the planner.  Actual fluid
      * locomotion (in water/lava/another fluid type) and swimming presentation
-     * (Vanilla swimming pose/flag) are separate exclusions. GravityEngine's
+     * (Vanilla swimming pose/flag) are separate facts. GravityEngine's
      * SWIM_ACTION model animation never sets either of these fields.
      */
     public record EntityState(
@@ -103,9 +103,7 @@ public final class GravityApplicationPlanner {
                 || (authority == GravityAuthorityMode.DIRECT && !hasExplicitState)
                 || (authority == GravityAuthorityMode.FIELD && !hasActiveField)
                 || state.sleeping()
-                || state.actualFluidLocomotion()
-                || state.swimmingPresentation()
-                || state.autoSpinAttack() || state.climbing()
+                || state.autoSpinAttack()
                 || state.deadOrDying() || state.controlledFlight()
                 || state.upsideDownPresentation() || state.otherVanillaPose()) {
             return GravityApplicationPlan.vanilla();

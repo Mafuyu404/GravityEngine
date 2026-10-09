@@ -34,11 +34,11 @@ public final class DynamicCollisionObstacleSnapshot {
     private final long providerRegistrationEpoch;
     private final long sourceId, primitiveId;
     private final CollisionBody exactLocalBody;
-    private final RigidMotionSnapshot motion;
+    private final RigidTrajectory motion;
     private final Aabb3d initialBounds, operationSweptBounds;
 
     public DynamicCollisionObstacleSnapshot(long sourceId, long primitiveId,
-            CollisionBody localBody, RigidMotionSnapshot motion) {
+            CollisionBody localBody, RigidTrajectory motion) {
         this(
                 RigidObstacleIdentity.NATIVE_PROVIDER_NAMESPACE,
                 PROVIDER_LOCAL_REGISTRATION_EPOCH,
@@ -54,7 +54,7 @@ public final class DynamicCollisionObstacleSnapshot {
             long sourceId,
             long primitiveId,
             CollisionBody localBody,
-            RigidMotionSnapshot motion
+            RigidTrajectory motion
     ) {
         this(
                 providerNamespace,
@@ -72,7 +72,7 @@ public final class DynamicCollisionObstacleSnapshot {
             long sourceId,
             long primitiveId,
             CollisionBody localBody,
-            RigidMotionSnapshot motion
+            RigidTrajectory motion
     ) {
         if (providerNamespace == null
                 || providerNamespace.isBlank()) {
@@ -148,7 +148,7 @@ public final class DynamicCollisionObstacleSnapshot {
         return hasRigidBox() ? motion.maximumPointDisplacement(localBody()) : motion.displacementForInterval().length();
     }
     public boolean hasRigidBox() { return exactLocalBody instanceof OrientedBox; }
-    public RigidMotionSnapshot motion() { return motion; }
+    public RigidTrajectory motion() { return motion; }
     public OrientedBox bodyAt(double time) { return motion.bodyAt(localBody(), time); }
     public Aabb3d initialBounds() { return initialBounds; }
     public Aabb3d operationSweptBounds() { return operationSweptBounds; }

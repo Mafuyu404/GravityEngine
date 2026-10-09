@@ -142,7 +142,7 @@ public record PersistentSupportState(
         }
 
         DynamicCollisionObstacleSnapshot obstacle = found.get();
-        RigidMotionSnapshot motion = obstacle.motion();
+        RigidTrajectory motion = obstacle.motion();
         if (obstacle.providerRegistrationEpoch()
                 != identity.providerRegistrationEpoch()
                 || motion.continuityEpoch()

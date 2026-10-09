@@ -10,6 +10,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /** Exact 2.0.6 publication/lifecycle seams, on each side's Level owner. */
 @Mixin(value = SubLevel.class, remap = false)
 public abstract class SablePublicationMixin {
+    @Inject(method = "updateLastPose", at = @At("RETURN"), require = 1)
+    private void gravityengine$beginMotion(CallbackInfo ci) {
+        SableRigidCollisionProvider.beginMotion((SubLevel)(Object)this);
+    }
     @Inject(method = "updateBoundingBox", at = @At("RETURN"), require = 1)
     private void gravityengine$publishBounds(CallbackInfo ci) {
         SableRigidCollisionProvider.update((SubLevel)(Object)this);

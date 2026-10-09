@@ -15,9 +15,10 @@ public final class MovementModeIntegration {
     public static MovementMode desired(Entity entity) {
         var state = GravityApplicationStateCapture.capture(entity);
         if (state.noPhysics() || state.spectator() || state.passenger() || state.sleeping()
-                || state.actualFluidLocomotion() || state.swimmingPresentation() || state.climbing()
                 || state.autoSpinAttack() || state.deadOrDying() || state.controlledFlight()
                 || state.upsideDownPresentation() || state.otherVanillaPose()) return MovementMode.NATIVE_FALLBACK;
+        if (state.actualFluidLocomotion() || state.swimmingPresentation()) return MovementMode.SWIMMING;
+        if (state.climbing()) return MovementMode.CLIMBING;
         return state.fallFlying() ? MovementMode.ELYTRA : MovementMode.GROUND_AIR;
     }
 

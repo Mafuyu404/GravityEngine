@@ -164,7 +164,8 @@ public final class LivingGravityIntegration {
                     ? new Vec3(resolvedTravel.x, axes.y, resolvedTravel.z)
                     : resolvedTravel;
             return new GravityTravelContext(entity, input, op, character, capture[0],
-                    cc.sighs.gravityengine.look.PlayerLookIntegration.capture(entity, op.gravitySnapshot().frame()));
+                    cc.sighs.gravityengine.look.PlayerLookIntegration.capture(entity, op.gravitySnapshot().frame()),
+                    MovementEnvironmentCapture.capture(entity, operationRuntime.collisionOperation().workTracker()));
         } catch (RuntimeException | Error failure) {
             op.close();
             throw failure;

@@ -55,6 +55,11 @@ class ArchitectureBoundaryTest {
                             + "SablePlayerCollisionCompatibility.java",
                     "cc/sighs/gravityengine/gravity/integration/compat/sable/SableGravityBridge.java",
                     "cc/sighs/gravityengine/mixin/compat/sable/SablePhysicsBaselineMixin.java",
+                    "cc/sighs/gravityengine/mixin/compat/sable/SableMassTrackerMixin.java",
+                    "cc/sighs/gravityengine/mixin/compat/sable/SableFloatingGravityMixin.java",
+                    "cc/sighs/gravityengine/mixin/compat/sable/SableMassRebaseMixin.java",
+                    "cc/sighs/gravityengine/mixin/compat/sable/SableTeleportMixin.java",
+                    "cc/sighs/gravityengine/mixin/compat/aeronautics/BalloonGravityMixin.java",
                     "cc/sighs/gravityengine/mixin/compat/sable/"
                             + "SableSubLevelEntityCollisionMixin.java"
             );

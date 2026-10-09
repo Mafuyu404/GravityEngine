@@ -46,7 +46,7 @@ public final class DynamicEntityBroadphasePolicy {
         record Key(RigidSourceKey source, long primitive) {}
         var keys = new java.util.HashSet<Key>();
         var publications =
-                new java.util.HashMap<RigidSourceKey, RigidMotionSnapshot>();
+                new java.util.HashMap<RigidSourceKey, RigidTrajectory>();
         for (var primitive : primitives) {
             var motion = primitive.motion();
             if (motion.tick() != time.gameTick() || motion.intervalTicks() != time.intervalTicks())
@@ -60,9 +60,10 @@ public final class DynamicEntityBroadphasePolicy {
             var previous = publications.putIfAbsent(sourceKey, motion);
             if (previous != null && !previous.equals(motion))
                 throw new CollisionSceneCoverageException("mixed rigid body publication/revision");
-            if (primitive.maximumPointDisplacement()
-                    > MAX_RIGID_SWEPT_REACH + CollisionTolerances.CONTACT_SKIN)
-                throw new CollisionSceneCoverageException("rigid sweep exceeds discovery reach");
+            // External providers discover their complete swept geometry. The
+            // native entity query's fixed reach is not their motion limit.
+            if (!Double.isFinite(primitive.maximumPointDisplacement()))
+                throw new CollisionSceneCoverageException("non-finite rigid sweep bound");
         }
     }
 

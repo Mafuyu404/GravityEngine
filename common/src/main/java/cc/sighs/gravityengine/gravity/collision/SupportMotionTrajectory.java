@@ -10,10 +10,10 @@ import java.util.Objects;
  *
  * <p>The support anchor is stored in obstacle-local coordinates. Its world
  * position is therefore always derived from the same immutable
- * RigidMotionSnapshot that owns the obstacle motion.</p>
+ * RigidTrajectory that owns the obstacle motion.</p>
  */
 public record SupportMotionTrajectory(
-        RigidMotionSnapshot motion,
+        RigidTrajectory motion,
         Vec3d localAnchor
 ) {
     /*
@@ -81,8 +81,8 @@ public record SupportMotionTrajectory(
      * Conservative world-space bounds for the complete material-point
      * trajectory over {@code [0,1]}.
      *
-     * <p>The translation component is linear, so the path is contained by the
-     * endpoint segment inflated by the maximum rotational excursion.</p>
+     * <p>Single-body motion uses an endpoint segment inflated by rotational
+     * excursion. Composed motion uses the trajectory enclosure directly.</p>
      */
     public Aabb3d bounds() {
         Vec3d start = positionAt(0.0D);
@@ -106,9 +106,14 @@ public record SupportMotionTrajectory(
      */
     public Aabb3d relativeBounds() {
         Vec3d start = positionAt(0.0D);
+        if (!(motion instanceof RigidMotionSnapshot single)) {
+            var bounds = motion.sweptBounds(pointBody(), 0, 1);
+            return new Aabb3d(bounds.minX() - start.x(), bounds.minY() - start.y(), bounds.minZ() - start.z(),
+                    bounds.maxX() - start.x(), bounds.maxY() - start.y(), bounds.maxZ() - start.z());
+        }
         Vec3d end = positionAt(1.0D);
         Vec3d displacement = end.subtract(start);
-        double excursion = maximumRotationalExcursion();
+        double excursion = maximumRotationalExcursion(single);
         return new Aabb3d(
                 Math.min(0.0D, displacement.x()) - excursion,
                 Math.min(0.0D, displacement.y()) - excursion,
@@ -119,15 +124,15 @@ public record SupportMotionTrajectory(
         );
     }
 
-    private double maximumRotationalExcursion() {
+    private double maximumRotationalExcursion(RigidMotionSnapshot single) {
         if (!motion.rotating()) {
             return 0.0D;
         }
         double radius = localAnchor.length();
         double angle = new Vec3d(
-                motion.ax(),
-                motion.ay(),
-                motion.az()
+                single.ax(),
+                single.ay(),
+                single.az()
         ).length();
         if (radius <= 1.0E-12D || angle <= 1.0E-12D) {
             return 0.0D;
@@ -137,6 +142,11 @@ public record SupportMotionTrajectory(
                 : 2.0D * Math.sin(angle * 0.5D));
     }
 
+    private cc.sighs.gravityengine.gravity.kinematic.geometry.OrientedBox pointBody() {
+        return new cc.sighs.gravityengine.gravity.kinematic.geometry.OrientedBox(localAnchor, 0,
+                cc.sighs.gravityengine.math.geometry.OrthonormalFrame3d.IDENTITY);
+    }
+
     public int requiredSegments() {
         return requiredSegments(
                 DEFAULT_MAX_SAGITTA
@@ -144,8 +154,9 @@ public record SupportMotionTrajectory(
     }
 
     /**
-     * Conservative chord subdivision count for the circular component of this
-     * rigid material-point trajectory.
+     * Conservative chord subdivision count. Single-body circular motion uses
+     * a sagitta bound; general composition bounds the interpolation error by
+     * maximum material-point acceleration times the squared interval / 8.
      */
     public int requiredSegments(
             double maxSagitta
@@ -161,11 +172,19 @@ public record SupportMotionTrajectory(
             return 1;
         }
 
+        if (!(motion instanceof RigidMotionSnapshot single)) {
+            double required = Math.ceil(Math.sqrt(motion.maximumPointAcceleration(pointBody())
+                    / (8 * maxSagitta)));
+            int multiple = motion.subdivisionMultiple();
+            required = Math.max(1, Math.ceil(required / multiple)) * multiple;
+            return required >= Integer.MAX_VALUE ? Integer.MAX_VALUE : Math.max(1, (int) required);
+        }
+
         double angle =
                 new Vec3d(
-                        motion.ax(),
-                        motion.ay(),
-                        motion.az()
+                        single.ax(),
+                        single.ay(),
+                        single.az()
                 ).length();
 
         double radius =
@@ -204,7 +223,7 @@ public record SupportMotionTrajectory(
 
         double required =
                 Math.ceil(
-                        motion.maximumAngularRate() / maxSegmentAngle
+                        single.maximumAngularRate() / maxSegmentAngle
                 );
 
         return required >= Integer.MAX_VALUE

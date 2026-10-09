@@ -13,6 +13,11 @@ public final class OptionalCompatibilityPlugin implements IMixinConfigPlugin {
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
         if (!cc.sighs.gravityengine.gravity.debug.DebugMixinSelection.shouldApply(
                 mixinClassName, cc.sighs.gravityengine.gravity.debug.BootDebugOptions.options())) return false;
+        if (mixinClassName.contains(".compat.aeronautics."))
+            return getClass().getClassLoader().getResource("dev/eriksonn/aeronautics/content/blocks/hot_air/balloon/ServerBalloon.class") != null
+                    && getClass().getClassLoader().getResource("dev/ryanhcode/sable/Sable.class") != null;
+        if (mixinClassName.contains(".compat.create."))
+            return getClass().getClassLoader().getResource("com/simibubi/create/Create.class") != null;
         return !mixinClassName.contains(".compat.sable.")
                 || getClass().getClassLoader().getResource("dev/ryanhcode/sable/Sable.class") != null;
     }

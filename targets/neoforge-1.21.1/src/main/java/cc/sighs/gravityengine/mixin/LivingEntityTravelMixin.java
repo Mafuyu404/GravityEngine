@@ -95,7 +95,8 @@ public abstract class LivingEntityTravelMixin {
         LivingEntity entity = (LivingEntity) (Object) this;
         Vec3 previousContribution = gravityengine$travelContribution;
         gravityengine$travelContribution = null;
-        try (var context = LivingGravityIntegration.openTravel(entity, input)) {
+        try (var context = LivingGravityIntegration.openTravel(entity, input);
+             var environment = context == null ? null : MovementEnvironmentCapture.open(entity, context.environment())) {
             shared.set(context);
             if (context == null) {
                 original.call(input);

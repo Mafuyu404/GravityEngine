@@ -23,6 +23,7 @@ import java.util.*;
 public final class SableRigidCollisionProvider implements ExternalRigidCollisionProvider {
     public static final String ID = "gravityengine:sable";
     private static final Map<Level, SableRigidCollisionProvider> LEVELS = Collections.synchronizedMap(new WeakHashMap<>());
+    private static final ThreadLocal<SubLevel> REBASING = new ThreadLocal<>();
     private final WeakReference<Level> level;
     private final Map<UUID, Entry> entries = new HashMap<>();
     private final Map<Long, Entry> sources = new HashMap<>();
@@ -43,6 +44,11 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         long revision;
         long epoch = 1;
         long nextPrimitive;
+        long teleportTick = Long.MIN_VALUE;
+        Pose3d teleportPose;
+        final List<Pose3d> physicsSamples = new ArrayList<>();
+        int sampleSteps;
+        String sampleFailure;
         final Vector3d pivot;
         final Vector3d scale;
         final Map<PrimitiveKey, Long> ids = new LinkedHashMap<>();
@@ -53,7 +59,8 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         PlotBounds plotBounds;
         Entry(SubLevel body, long source) {
             this.body = new WeakReference<>(body); this.source = source;
-            pivot = new Vector3d(body.logicalPose().rotationPoint());
+            var origin = body.getPlot().getCenterBlock();
+            pivot = new Vector3d(origin.getX(), origin.getY(), origin.getZ());
             scale = new Vector3d(body.logicalPose().scale());
         }
     }
@@ -73,11 +80,13 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
             provider.sources.put(entry.source, entry);
         }
         provider.unindex(entry);
-        if (!entry.pivot.equals(body.logicalPose().rotationPoint()) || !entry.scale.equals(body.logicalPose().scale())) {
-            // A local-coordinate basis change is a real witness discontinuity, unlike a block material edit.
+        if (!entry.scale.equals(body.logicalPose().scale())) {
+            // A scale edit atomically replaces geometry; COM rebasing preserves the fixed plot basis.
             entry.epoch = Math.incrementExact(entry.epoch);
             entry.ids.clear(); entry.keys.clear(); entry.geometry.clear();
-            entry.pivot.set(body.logicalPose().rotationPoint()); entry.scale.set(body.logicalPose().scale());
+            entry.scale.set(body.logicalPose().scale());
+            entry.physicsSamples.clear(); entry.sampleSteps = 0; entry.sampleFailure = null;
+            entry.teleportTick = level.getGameTime(); entry.teleportPose = new Pose3d(body.logicalPose());
         }
         entry.revision++;
         entry.plotBounds = PlotBounds.capture(body.getPlot().getBoundingBox());
@@ -85,7 +94,7 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         // Excessive relevant motion is refused at capture; it must never disappear from discovery.
         try {
             entry.bounds = motion(entry, body, KinematicStepContext.fullTick(level.getGameTime(), 0))
-                    .sweptBounds(plotShape(body, start(body)), 0, 1);
+                    .sweptBounds(plotShape(entry, body), 0, 1);
         } catch (CollisionSceneCoverageException unsupported) {
             entry.bounds = discontinuousBounds(body);
         }
@@ -122,6 +131,62 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
             return true;
         });
         entry.geometry.remove(pos);
+    }
+
+    public static void chunkReplacing(SubLevel body, net.minecraft.world.level.ChunkPos globalChunk) {
+        var provider = LEVELS.get(body.getLevel());
+        if (provider == null) return;
+        var entry = provider.entries.get(body.getUniqueId());
+        if (entry == null || entry.body.get() != body) return;
+        for (var position : java.util.List.copyOf(entry.geometry.keySet()))
+            if (new net.minecraft.world.level.ChunkPos(position).equals(globalChunk)) retireCell(entry, position);
+    }
+
+    public static void rebase(SubLevel body, Runnable nativeTeleport) {
+        var previous = REBASING.get(); REBASING.set(body);
+        try { nativeTeleport.run(); }
+        finally { if (previous == null) REBASING.remove(); else REBASING.set(previous); }
+    }
+
+    public static void teleported(SubLevel body) {
+        if (REBASING.get() == body) return;
+        var provider = LEVELS.get(body.getLevel());
+        var entry = provider == null ? null : provider.entries.get(body.getUniqueId());
+        if (entry == null || entry.body.get() != body) return;
+        entry.epoch = Math.incrementExact(entry.epoch);
+        entry.teleportTick = body.getLevel().getGameTime();
+        entry.teleportPose = new Pose3d(body.logicalPose());
+        entry.physicsSamples.clear(); entry.sampleSteps = 0; entry.sampleFailure = null;
+        update(body);
+    }
+
+    /** Native tick start resets transient evidence; no samples survive a pose lifetime. */
+    public static void beginMotion(SubLevel body) {
+        update(body);
+        var entry = LEVELS.get(body.getLevel()).entries.get(body.getUniqueId());
+        entry.teleportTick = Long.MIN_VALUE; entry.teleportPose = null;
+        entry.physicsSamples.clear(); entry.physicsSamples.add(new Pose3d(body.logicalPose()));
+        entry.sampleSteps = 0; entry.sampleFailure = null;
+    }
+
+    public static void physicsSample(dev.ryanhcode.sable.sublevel.ServerSubLevel body, double phase,
+                                      dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem system) {
+        var provider = LEVELS.get(body.getLevel());
+        var entry = provider == null ? null : provider.entries.get(body.getUniqueId());
+        if (entry == null) { beginMotion(body); entry = LEVELS.get(body.getLevel()).entries.get(body.getUniqueId());
+            entry.sampleFailure = "missing native tick-start sample"; }
+        if (entry.sampleFailure != null) return;
+        if (entry.sampleSteps == 0) entry.sampleSteps = (int)Math.round(1/phase);
+        if (entry.sampleSteps < 1 || entry.sampleSteps > CollisionWorkBudget.defaults().maxSupportTrajectorySegments()
+                || Math.abs(phase - (double)entry.physicsSamples.size()/entry.sampleSteps) > 1e-8) {
+            entry.sampleFailure = "missing or over-budget native substep samples"; return;
+        }
+        double angular = system.getPhysicsHandle(body).getAngularVelocity(new Vector3d()).length();
+        if (!Double.isFinite(angular) || angular/(20*entry.sampleSteps) >= Math.PI) {
+            entry.sampleFailure = "native angular motion exceeds sample coverage"; return;
+        }
+        entry.physicsSamples.add(new Pose3d(body.logicalPose()));
+        update(body);
     }
 
     public static void remove(SubLevel body) {
@@ -192,17 +257,18 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
                 var children = serverPlot.getContraptions();
                 if (children.size() > CollisionWorkBudget.defaults().maxObstaclePrimitives())
                     throw new CollisionComplexityLimitException("Sable contraption discovery budget");
-                if (children.stream().anyMatch(c -> c.sable$isValid() && c.sable$shouldCollide()))
+                if (children.stream().anyMatch(c -> c.sable$isValid() && c.sable$shouldCollide()
+                        && !cc.sighs.gravityengine.gravity.integration.compat.create.CreateCompatibility.publishes(c)))
                     throw unsupported("Sable kinematic contraptions need a separate motion publication; source=" + entry.source);
             }
-            var start = start(body);
+            var start = entry.teleportTick == query.time().gameTick() ? new Pose3d(entry.teleportPose) : start(body);
             var motion = motion(entry, body, query.time());
             var context = context(actor, start);
-            if (motion.maximumPointDisplacement(plotShape(body, start)) > DynamicEntityBroadphasePolicy.MAX_RIGID_SWEPT_REACH)
-                throw unsupported("Sable material-point motion exceeds bounded discovery; source=" + entry.source);
-            // Transform the expanded discovery region into plot coordinates.
-            // The reach inflation proves coverage without replacing primitive geometry.
-            Aabb3d local = inverseBounds(start, query.dynamicBounds());
+            double reach = motion.maximumPointDisplacement(plotShape(entry, body));
+            if (!Double.isFinite(reach)) throw unsupported("Sable non-finite swept discovery bound");
+            // A material point reaching the query must begin within this
+            // conservative excursion. Work budgets bound the resulting scan.
+            Aabb3d local = inverseBounds(start, query.staticBounds().inflate(reach + CollisionTolerances.CONTACT_SKIN));
             var plot = body.getPlot().getBoundingBox();
             int x0 = Math.max(plot.minX(), (int)Math.floor(local.minX())-1);
             int y0 = Math.max(plot.minY(), (int)Math.floor(local.minY())-1);
@@ -214,17 +280,13 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
                 if (++checkedBlocks > CollisionWorkBudget.defaults().maxBlockPositions())
                     throw new CollisionComplexityLimitException("Sable block discovery budget");
                 var pos = new BlockPos(x,y,z);
-                var state = world.getBlockState(pos);
+                var chunk = body.getPlot().getChunk(body.getPlot().toLocal(new net.minecraft.world.level.ChunkPos(pos)));
+                if (chunk == null) throw unsupported("Sable plot chunk data unavailable at " + pos);
+                var state = chunk.getBlockState(pos);
                 if (state.isAir()) continue;
-                if (state.getBlock() instanceof net.minecraft.world.level.block.ScaffoldingBlock) {
-                    if (motion.sweptBounds(shape(start, pos, new net.minecraft.world.phys.AABB(0,0,0,1,1,1)), 0, 1)
-                            .intersects(query.staticBounds()))
-                        throw unsupported("Sable scaffolding locomotion is unsupported; source=" + entry.source + " block=" + pos);
-                    continue;
-                }
                 var boxes = state.getCollisionShape(world, pos, context).toAabbs();
                 for (int i=0; i<boxes.size(); i++) {
-                    var shape = shape(start, pos, boxes.get(i));
+                    var shape = shape(entry, pos, boxes.get(i));
                     // Shapes are evaluated for every subject. Only exactly equal immutable
                     // geometry shares an identity; never reuse one actor's queried shape.
                     var key = new PrimitiveKey(pos, i, shape);
@@ -257,9 +319,11 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         if (actor == null) return Optional.empty();
         try {
             var motion = motion(entry, body, time);
-            var boxes = world.getBlockState(key.position()).getCollisionShape(world, key.position(), context(actor, start(body))).toAabbs();
+            var chunk = body.getPlot().getChunk(body.getPlot().toLocal(new net.minecraft.world.level.ChunkPos(key.position())));
+            if (chunk == null) throw unsupported("Sable support plot chunk unavailable");
+            var boxes = chunk.getBlockState(key.position()).getCollisionShape(world, key.position(), context(actor, start(body))).toAabbs();
             if (key.box() >= boxes.size()) return Optional.empty();
-            var shape = shape(start(body), key.position(), boxes.get(key.box()));
+            var shape = shape(entry, key.position(), boxes.get(key.box()));
             if (!shape.equals(key.shape())) return Optional.empty();
             return Optional.of(new DynamicCollisionObstacleSnapshot(entry.source, identity.primitiveId(), shape, motion));
         } catch (CollisionSceneCoverageException unsupported) {
@@ -284,13 +348,12 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         var key = entry == null ? null : entry.keys.get(identity.primitiveId());
         if (key == null) return Optional.empty();
         return Optional.of(new cc.sighs.gravityengine.gravity.integration.BlockContactResolver.Resolved(
-                key.position(), actor.level().getBlockState(key.position()),
+                actor.level(), key.position(), actor.level().getBlockState(key.position()),
                 context(actor, start(entry.body.get())), contact,
                 Optional.of(obstacle.get().motion().poseAt(1))));
     }
 
-    /** Entity state remains real; only positional isAbove is translated to plot coordinates.
-     * Scaffolding stays unsupported: context alone does not supply its climbing/descending policy. */
+    /** Entity state remains real; positional isAbove uses the captured plot basis. */
     private static net.minecraft.world.phys.shapes.CollisionContext context(net.minecraft.world.entity.Entity actor, Pose3d pose) {
         var box = cc.sighs.gravityengine.gravity.minecraft.collision.MinecraftCollisionGeometryAdapter
                 .toAabb3d(actor.getBoundingBox());
@@ -306,9 +369,9 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         return new CollisionSceneCoverageException(CollisionSceneCoverageException.Reason.UNSUPPORTED_GEOMETRY, message);
     }
 
-    private static OrientedBox plotShape(SubLevel body, Pose3d pose) {
+    private static OrientedBox plotShape(Entry entry, SubLevel body) {
         var b = body.getPlot().getBoundingBox();
-        return shape(pose, BlockPos.ZERO, new net.minecraft.world.phys.AABB(
+        return shape(entry, BlockPos.ZERO, new net.minecraft.world.phys.AABB(
                 b.minX(), b.minY(), b.minZ(), b.maxX()+1.0, b.maxY()+1.0, b.maxZ()+1.0));
     }
 
@@ -340,28 +403,107 @@ public final class SableRigidCollisionProvider implements ExternalRigidCollision
         if (start.rotationPoint().lengthSquared() == 0) start.rotationPoint().set(body.logicalPose().rotationPoint());
         return start;
     }
-    private static RigidMotionSnapshot motion(Entry entry, SubLevel body, KinematicStepContext time) {
+    private static RigidTrajectory motion(Entry entry, SubLevel body, KinematicStepContext time) {
         if (time.intervalTicks() != 1) throw unsupported("Sable collision publication covers one tick");
-        var a = start(body);
+        if (entry.sampleFailure != null) throw unsupported(entry.sampleFailure);
+        if (entry.sampleSteps > 0) {
+            if (entry.physicsSamples.size()!=entry.sampleSteps+1) throw unsupported("incomplete native substep trajectory");
+            var segments = new ArrayList<RigidTrajectory>();
+            for (int i=0;i<entry.sampleSteps;i++)
+                segments.add(segment(entry, new Pose3d(entry.physicsSamples.get(i)), entry.physicsSamples.get(i+1), time, 1.0/entry.sampleSteps));
+            return new SampledRigidTrajectory(segments);
+        }
+        var a = entry.teleportTick == time.gameTick() ? new Pose3d(entry.teleportPose) : start(body);
         var b = body.logicalPose();
-        if (!a.rotationPoint().equals(b.rotationPoint()) || !a.scale().equals(b.scale())
-                || a.scale().x <= 0 || a.scale().y <= 0 || a.scale().z <= 0)
-            throw unsupported("Sable changing pivot/scale is not a continuous rigid publication");
+        return segment(entry, a, b, time, 1);
+    }
+    private static RigidTrajectory segment(Entry entry, Pose3d a, Pose3d b, KinematicStepContext time, double interval) {
+        if (b.scale().x <= 0 || b.scale().y <= 0 || b.scale().z <= 0)
+            throw unsupported("Sable nonpositive scale has no rigid geometry");
+        // Scale changes install a fresh geometry at the endpoint, never an
+        // invented continuous deformation. update() has retired old identities.
+        if (!a.scale().equals(b.scale())) a.set(b);
+        // Express both endpoints about the current native COM, preserving each
+        // endpoint's actual world transform. The primitive basis stays fixed.
+        var shift = new Vector3d(b.rotationPoint()).sub(a.rotationPoint()).mul(a.scale());
+        a.position().add(a.orientation().transform(shift));
+        a.rotationPoint().set(b.rotationPoint());
         var delta = new Quaterniond(b.orientation()).mul(new Quaterniond(a.orientation()).conjugate()).normalize();
         if (delta.w < 0) delta.mul(-1);
         double length = Math.sqrt(delta.x*delta.x + delta.y*delta.y + delta.z*delta.z);
         double angle = 2*Math.atan2(length, delta.w);
         Vec3d angular = length == 0 ? Vec3d.ZERO : new Vec3d(delta.x,delta.y,delta.z).multiply(angle/length);
         Vec3d displacement = vec(b.position()).subtract(vec(a.position()));
-        return new RigidMotionSnapshot(new RigidPose(vec(a.position()), BodyOrientation3d.frame(
+        var parent = new RigidMotionSnapshot(new RigidPose(vec(a.position()), BodyOrientation3d.frame(
                 new Quatd(a.orientation().x, a.orientation().y, a.orientation().z, a.orientation().w))),
                 displacement.x(), displacement.y(), displacement.z(), angular.x(), angular.y(), angular.z(),
-                time.gameTick(), entry.revision, entry.epoch, 1, true);
+                time.gameTick(), entry.revision, entry.epoch, interval, true);
+        var offset = new Vector3d(entry.pivot).sub(b.rotationPoint()).mul(b.scale());
+        if (offset.lengthSquared() == 0) return parent;
+        var basis = new RigidMotionSnapshot(new RigidPose(vec(offset), OrthonormalFrame3d.IDENTITY),
+                Vec3d.ZERO, Vec3d.ZERO, time.gameTick(), entry.revision, entry.epoch, interval);
+        return new ComposedRigidTrajectory(parent, basis, entry.revision, entry.epoch);
     }
-    private static OrientedBox shape(Pose3d pose, BlockPos pos, net.minecraft.world.phys.AABB box) {
+    /** Captures the same parent publication used by plot collision. */
+    public static RigidTrajectory captureMotion(SubLevel body, KinematicStepContext time) {
+        var provider = LEVELS.get(body.getLevel());
+        var entry = provider == null ? null : provider.entries.get(body.getUniqueId());
+        if (entry == null || entry.body.get() != body) throw unsupported("Sable parent publication unavailable");
+        return motion(entry, body, time);
+    }
+    public static Vec3d plotOrigin(SubLevel body) {
+        var p = body.getPlot().getCenterBlock();
+        return new Vec3d(p.getX(), p.getY(), p.getZ());
+    }
+    public static void captureEnvironment(cc.sighs.gravityengine.gravity.integration.MovementEnvironmentCapture.Builder result) {
+        var world=result.actor().level(); var provider=LEVELS.get(world);
+        if(provider==null) return;
+        var selected=new HashSet<Entry>(); selectBounded(selected,provider.large);
+        var domain=cells(result.bounds());
+        if(domain.isEmpty()) throw new CollisionComplexityLimitException("environment source discovery budget");
+        for(var cell:domain) selectBounded(selected,provider.buckets.getOrDefault(cell,Set.of()));
+        var time=KinematicStepContext.fullTick(world.getGameTime(),0);
+        for(var entry:selected.stream().sorted(Comparator.comparingLong(e->e.source)).toList()) {
+            var body=entry.body.get();
+            if(body==null || body.isRemoved() || !entry.bounds.intersects(result.bounds())) continue;
+            var trajectory=motion(entry,body,time);
+            var first=trajectory.poseAt(0);
+            var inverse=BodyOrientation3d.quaternion(first.orientation()).conjugate();
+            var min=new Vector3d(Double.POSITIVE_INFINITY);var max=new Vector3d(Double.NEGATIVE_INFINITY);
+            var bounds=result.bounds();
+            for(int i=0;i<8;i++) {
+                var p=inverse.transform(new Vec3d((i&1)==0?bounds.minX():bounds.maxX(),
+                        (i&2)==0?bounds.minY():bounds.maxY(),(i&4)==0?bounds.minZ():bounds.maxZ()).subtract(first.center()));
+                var local=new Vector3d(p.x(),p.y(),p.z()).div(entry.scale).add(entry.pivot);
+                min.min(local);max.max(local);
+            }
+            var plot=body.getPlot();var limits=plot.getBoundingBox();
+            for(int x=Math.max(limits.minX(),(int)Math.floor(min.x));x<=Math.min(limits.maxX(),Math.floor(max.x));x++)
+                for(int y=Math.max(limits.minY(),(int)Math.floor(min.y));y<=Math.min(limits.maxY(),Math.floor(max.y));y++)
+                    for(int z=Math.max(limits.minZ(),(int)Math.floor(min.z));z<=Math.min(limits.maxZ(),Math.floor(max.z));z++) {
+                        result.visit();var position=new BlockPos(x,y,z);
+                        var chunk=plot.getChunk(plot.toLocal(new net.minecraft.world.level.ChunkPos(position)));
+                        if(chunk==null) throw unsupported("environment plot chunk unavailable");
+                        var voxel=trajectory.bodyAt(shape(entry,position,new net.minecraft.world.phys.AABB(0,0,0,1,1,1)),0);
+                        result.accept(world,position,chunk.getBlockState(position),voxel,trajectory.velocityAt(voxel.center(),0));
+                    }
+        }
+    }
+    public static boolean fluidOccluded(net.minecraft.world.entity.Entity actor) {
+        var container=dev.ryanhcode.sable.sublevel.water_occlusion.WaterOcclusionContainer.getContainer(actor.level());
+        return container!=null && (container.isOccluded(actor.getBoundingBox().getCenter()) || container.isOccluded(actor.position()));
+    }
+    public static Optional<SableMovementCompatibility.ParentMotion> parentMotion(net.minecraft.world.entity.Entity entity,
+                                                                                KinematicStepContext time) {
+        var body = dev.ryanhcode.sable.Sable.HELPER.getContaining(entity);
+        if (body == null) return Optional.empty();
+        if (!body.logicalPose().scale().equals(1, 1, 1)) throw unsupported("scaled parent cannot compose Create rigid geometry");
+        return Optional.of(new SableMovementCompatibility.ParentMotion(captureMotion(body, time), plotOrigin(body), body.getUniqueId()));
+    }
+    private static OrientedBox shape(Entry entry, BlockPos pos, net.minecraft.world.phys.AABB box) {
         var center = new Vector3d((box.minX+box.maxX)*.5+pos.getX(), (box.minY+box.maxY)*.5+pos.getY(),
-                (box.minZ+box.maxZ)*.5+pos.getZ()).sub(pose.rotationPoint()).mul(pose.scale());
-        var half = new Vector3d(box.getXsize()*.5, box.getYsize()*.5, box.getZsize()*.5).mul(pose.scale());
+                (box.minZ+box.maxZ)*.5+pos.getZ()).sub(entry.pivot).mul(entry.scale);
+        var half = new Vector3d(box.getXsize()*.5, box.getYsize()*.5, box.getZsize()*.5).mul(entry.scale);
         return new OrientedBox(vec(center), vec(half), OrthonormalFrame3d.IDENTITY);
     }
     private static Aabb3d inverseBounds(Pose3d pose, Aabb3d bounds) {

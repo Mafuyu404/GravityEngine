@@ -6,11 +6,8 @@ import cc.sighs.gravityengine.api.math.Vec3d;
 import dev.ryanhcode.sable.api.physics.mass.MassTracker;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.companion.math.Pose3d;
-import dev.ryanhcode.sable.physics.config.block_properties.PhysicsBlockPropertyHelper;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
-import dev.ryanhcode.sable.util.LevelAccelerator;
-import net.minecraft.core.BlockPos;
 import org.joml.Quaterniond;
 import org.joml.Vector3d;
 import java.util.Map;
@@ -20,9 +17,27 @@ import java.util.WeakHashMap;
  * Sable retains all rigid mass, velocity, pose and integration authority. */
 public final class SableGravityBridge {
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(SableGravityBridge.class);
-    private static final int MAX_MASS_POSITIONS = 65_536;
     private static final Map<SubLevelPhysicsSystem, Vec3d> BASELINES = new WeakHashMap<>();
     private SableGravityBridge() {}
+
+    /** One native lift calculation owns one complete FIELD query; absence keeps its native operand. */
+    public static Vector3d liftGravity(ServerSubLevel body, org.joml.Vector3dc point,
+                                       Vector3d nativeGravity, double seconds) {
+        if (!Boolean.parseBoolean(System.getProperty("gravityengine.sableGravity", "true"))) return nativeGravity;
+        if (!Double.isFinite(seconds) || seconds <= 0) throw new IllegalArgumentException("invalid lift step");
+        var system = SubLevelPhysicsSystem.require(body.getLevel());
+        var handle = system.getPhysicsHandle(body);
+        var radius = new Vector3d(point).sub(body.logicalPose().position());
+        var velocity = handle.getAngularVelocity(new Vector3d()).cross(radius)
+                .add(handle.getLinearVelocity(new Vector3d())).div(20);
+        var sample = GravityEngineApi.sample(body.getLevel(), new Vec3d(point.x(), point.y(), point.z()),
+                new Vec3d(velocity.x, velocity.y, velocity.z), body.getLevel().getGameTime(), seconds * 20);
+        if (sample.coverage() == FieldCoverage.COMPLETE && sample.fieldPresent()) {
+            var acceleration = sample.acceleration().multiply(400);
+            nativeGravity.set(acceleration.x(), acceleration.y(), acceleration.z());
+        }
+        return nativeGravity;
+    }
 
     public static void initialized(SubLevelPhysicsSystem system, double x, double y, double z) {
         BASELINES.put(system, new Vec3d(x,y,z));
@@ -46,80 +61,82 @@ public final class SableGravityBridge {
         if (!Double.isFinite(seconds) || seconds <= 0 || !baseline.isFinite())
             throw new IllegalArgumentException("invalid Sable gravity step");
         var pose = new Pose3d(body.logicalPose());
-        if (!unitScale(pose) || !body.getPlot().getContraptions().isEmpty()) {
-            applyComOnly(body, handle, mass.getCenterOfMass(), baseline, seconds);
-            return;
-        }
 
-        var self = body.getSelfMassTracker();
-        if (self == null || self.isInvalid()) return;
-        var bounds = body.getPlot().getBoundingBox();
-        var blocks = new LevelAccelerator(body.getLevel());
-        var position = new BlockPos.MutableBlockPos();
-        var worldCenter = pose.transformPosition(mass.getCenterOfMass(), new Vector3d());
+        var captures = new java.util.ArrayList<MassCapture>();
+        var self = capture(body.getSelfMassTracker(), null, new Vector3d(), new Vector3d(), null, 0);
+        if (self == null) return;
+        captures.add(self);
+        int count = self.points().size();
+        double phase = (float)system.getPartialPhysicsTick(); // same operand as updateMergedMassData
+        for (var contraption : body.getPlot().getContraptions()) {
+            if (!contraption.sable$isValid()) return;
+            // Match Sable's kinematic velocity operands (also used by floating-block drag).
+            var previousPosition = new Vector3d(contraption.sable$getPosition(phase - 1));
+            var previousOrientation = new Quaterniond(contraption.sable$getOrientation(phase - 1));
+            var childPose = new Pose3d(contraption.sable$getLocalPose(new Pose3d(), phase));
+            var childVelocity = new Vector3d(contraption.sable$getPosition(phase)).sub(previousPosition).mul(20);
+            var childAngular = dev.ryanhcode.sable.util.SableMathUtils.getAngularVelocity(previousOrientation,
+                    new Quaterniond(contraption.sable$getOrientation(phase)), new Vector3d()).mul(20);
+            // Quaternion difference is expressed in the child's local axes.
+            previousOrientation.transform(childAngular);
+            var child = capture(contraption.sable$getMassTracker(), childPose, childVelocity, childAngular, contraption, phase);
+            if (child == null || (count += child.points().size()) > SableMassPoints.MAX_POINTS) return;
+            captures.add(child);
+        }
+        double nativeMass = mass.getMass();
+        var nativeCenter = new Vector3d(mass.getCenterOfMass());
+        var nativeInertia = new org.joml.Matrix3d(mass.getInverseInertiaTensor());
+        var worldCenter = pose.transformPosition(nativeCenter, new Vector3d());
         var linearVelocity = handle.getLinearVelocity(new Vector3d());
         var angularVelocity = handle.getAngularVelocity(new Vector3d());
         var netForce = new Vector3d();
         var netTorque = new Vector3d();
         var weightedCenter = new Vector3d();
         double capturedMass = 0;
-        int checked = 0;
 
-        for (int x = bounds.minX(); x <= bounds.maxX(); x++) {
-            for (int y = bounds.minY(); y <= bounds.maxY(); y++) {
-                for (int z = bounds.minZ(); z <= bounds.maxZ(); z++) {
-                    if (++checked > MAX_MASS_POSITIONS) {
-                        LOGGER.warn("Sable gravity mass capture exceeded {} positions for {}", MAX_MASS_POSITIONS, body.getUniqueId());
-                        return;
-                    }
-                    position.set(x, y, z);
-                    var state = blocks.getBlockState(position);
-                    double blockMass = PhysicsBlockPropertyHelper.getMass(blocks, position, state);
-                    if (!Double.isFinite(blockMass) || blockMass < 0) {
-                        LOGGER.warn("Sable gravity found invalid block mass at {} in {}", position, body.getUniqueId());
-                        return;
-                    }
-                    if (blockMass == 0) continue;
-
-                    var blockCenter = MassTracker.BLOCK_CENTER_OF_MASS.apply(blocks, state);
-                    var localPoint = new Vector3d(x, y, z).add(blockCenter);
-                    weightedCenter.fma(blockMass, localPoint);
-                    capturedMass += blockMass;
-                    var worldPoint = pose.transformPosition(localPoint, new Vector3d());
-                    var radius = worldPoint.sub(worldCenter, new Vector3d());
-                    var pointVelocity = new Vector3d(angularVelocity).cross(radius).add(linearVelocity);
-                    var sample = GravityEngineApi.sample(body.getLevel(),
-                            new Vec3d(worldPoint.x, worldPoint.y, worldPoint.z),
-                            new Vec3d(pointVelocity.x, pointVelocity.y, pointVelocity.z).divide(20),
-                            body.getLevel().getGameTime(), seconds * 20);
-                    if (sample.coverage() != FieldCoverage.COMPLETE) {
-                        LOGGER.debug("Sable gravity field coverage incomplete for {}", body.getUniqueId());
-                        return;
-                    }
-                    if (!sample.fieldPresent()) continue;
-                    var difference = sample.acceleration().multiply(400).subtract(baseline);
-                    var force = new Vector3d(difference.x(), difference.y(), difference.z()).mul(blockMass);
-                    netForce.add(force);
-                    netTorque.add(new Vector3d(radius).cross(force));
+        for (var capture : captures) {
+            for (var point : capture.points()) {
+                double blockMass = point.mass();
+                var p = point.position();
+                var localPoint = new Vector3d(p.x(), p.y(), p.z());
+                if (capture.localPose() != null) capture.localPose().transformPosition(localPoint);
+                weightedCenter.fma(blockMass, localPoint);
+                capturedMass += blockMass;
+                var worldPoint = pose.transformPosition(localPoint, new Vector3d());
+                var radius = worldPoint.sub(worldCenter, new Vector3d());
+                var pointVelocity = new Vector3d(angularVelocity).cross(radius).add(linearVelocity);
+                if (capture.localPose() != null) {
+                    var childRadius = new Vector3d(localPoint).sub(capture.localPose().position());
+                    var relative = new Vector3d(capture.angularVelocity()).cross(childRadius).add(capture.linearVelocity());
+                    pointVelocity.add(pose.orientation().transform(relative.mul(pose.scale())));
                 }
+                var sample = GravityEngineApi.sample(body.getLevel(),
+                        new Vec3d(worldPoint.x, worldPoint.y, worldPoint.z),
+                        new Vec3d(pointVelocity.x, pointVelocity.y, pointVelocity.z).divide(20),
+                        body.getLevel().getGameTime(), seconds * 20);
+                if (sample.coverage() != FieldCoverage.COMPLETE) return;
+                if (!sample.fieldPresent()) continue;
+                var difference = sample.acceleration().multiply(400).subtract(baseline);
+                var force = new Vector3d(difference.x(), difference.y(), difference.z()).mul(blockMass);
+                netForce.add(force);
+                netTorque.add(new Vector3d(radius).cross(force));
             }
         }
-
         if (!(capturedMass > 0) || !Double.isFinite(capturedMass)) return;
         weightedCenter.div(capturedMass);
-        if (!sameMass(capturedMass, self.getMass()) || !sameMass(capturedMass, mass.getMass())
-                || weightedCenter.distance(self.getCenterOfMass()) > 1.0E-7
-                || weightedCenter.distance(mass.getCenterOfMass()) > 1.0E-7) {
-            LOGGER.warn("Sable gravity mass capture disagrees with current mass tracker for {}", body.getUniqueId());
-            return;
-        }
+        if (!sameMass(capturedMass, nativeMass) || weightedCenter.distance(nativeCenter) > 1.0E-7
+                || mass != body.getMassTracker() || mass.getMass() != nativeMass
+                || !nativeCenter.equals(mass.getCenterOfMass())
+                || !nativeInertia.equals(mass.getInverseInertiaTensor())
+                || !samePose(pose, body.logicalPose())
+                || captures.stream().anyMatch(c -> !c.unchanged())) return;
 
         // Sable 2.0.6 Rapier has no usable inverse mass before a new body's first
         // step. Its velocity increment API works then and accepts world vectors.
-        var deltaV = netForce.mul(seconds / mass.getMass());
+        var deltaV = netForce.mul(seconds / nativeMass);
         var orientation = new Quaterniond(pose.orientation()).normalize();
         var localTorqueImpulse = orientation.conjugate(new Quaterniond()).transform(netTorque.mul(seconds), new Vector3d());
-        var localDeltaOmega = mass.getInverseInertiaTensor().transform(localTorqueImpulse, new Vector3d());
+        var localDeltaOmega = nativeInertia.transform(localTorqueImpulse, new Vector3d());
         var deltaOmega = orientation.transform(localDeltaOmega, new Vector3d());
         if (!finite(deltaV) || !finite(deltaOmega)) {
             LOGGER.warn("Sable gravity produced non-finite velocity correction for {}", body.getUniqueId());
@@ -129,9 +146,40 @@ public final class SableGravityBridge {
             handle.addLinearAndAngularVelocity(deltaV, deltaOmega);
     }
 
-    private static boolean unitScale(Pose3d pose) {
-        var scale = pose.scale();
-        return scale.x() == 1.0 && scale.y() == 1.0 && scale.z() == 1.0;
+    private record MassCapture(MassTracker tracker, java.util.List<SableMassPoints.Point> points,
+                               double mass, Vector3d center, org.joml.Matrix3d inverseInertia, Pose3d localPose,
+                               Vector3d linearVelocity, Vector3d angularVelocity,
+                               dev.ryanhcode.sable.api.sublevel.KinematicContraption child, double phase) {
+        boolean unchanged() {
+            return ((SableMassPoints.Access)tracker).gravityengine$massPoints().snapshot() == points
+                    && tracker.getMass() == mass && center.equals(tracker.getCenterOfMass())
+                    && inverseInertia.equals(tracker.getInverseInertiaTensor())
+                    && (child == null || child.sable$isValid() && child.sable$getMassTracker() == tracker
+                        && samePose(localPose, child.sable$getLocalPose(new Pose3d(), phase)));
+        }
+    }
+    private static MassCapture capture(MassTracker tracker, Pose3d localPose, Vector3d linear, Vector3d angular,
+                                       dev.ryanhcode.sable.api.sublevel.KinematicContraption child, double phase) {
+        if (tracker == null || tracker.isInvalid()) return null;
+        var points = ((SableMassPoints.Access)tracker).gravityengine$massPoints().snapshot();
+        if (points == null) return null;
+        double mass = 0;
+        var center = new Vector3d();
+        for (var point : points) {
+            mass += point.mass();
+            var p = point.position();
+            center.fma(point.mass(), new Vector3d(p.x(), p.y(), p.z()));
+        }
+        if (!(mass > 0) || !sameMass(mass, tracker.getMass())) return null;
+        center.div(mass);
+        if (center.distance(tracker.getCenterOfMass()) > 1e-7) return null;
+        return new MassCapture(tracker, points, tracker.getMass(), new Vector3d(tracker.getCenterOfMass()),
+                new org.joml.Matrix3d(tracker.getInverseInertiaTensor()), localPose, linear, angular, child, phase);
+    }
+
+    private static boolean samePose(Pose3d a, Pose3d b) {
+        return a.position().equals(b.position()) && a.orientation().equals(b.orientation())
+                && a.rotationPoint().equals(b.rotationPoint()) && a.scale().equals(b.scale());
     }
 
     private static boolean sameMass(double a, double b) {
@@ -142,19 +190,4 @@ public final class SableGravityBridge {
         return Double.isFinite(vector.x) && Double.isFinite(vector.y) && Double.isFinite(vector.z);
     }
 
-    private static void applyComOnly(ServerSubLevel body, RigidBodyHandle handle,
-                                     org.joml.Vector3dc localCenter, Vec3d baseline, double seconds) {
-        var center = body.logicalPose().transformPosition(localCenter, new Vector3d());
-        var velocity = handle.getLinearVelocity(new Vector3d());
-        var sample = GravityEngineApi.sample(body.getLevel(), new Vec3d(center.x,center.y,center.z),
-                new Vec3d(velocity.x,velocity.y,velocity.z).divide(20), body.getLevel().getGameTime(), seconds * 20);
-        if (sample.coverage() != FieldCoverage.COMPLETE || !sample.fieldPresent()) return;
-        // Use the acceleration/velocity boundary: Rapier's impulse API consults
-        // cached inverse mass which is not initialized until a new body's first
-        // step. Direct delta-v works on that first step and is mass-independent,
-        // as gravitational acceleration must be. No force is passed as acceleration.
-        var increment = correctiveVelocityIncrement(sample.acceleration(), baseline, seconds);
-        handle.addLinearAndAngularVelocity(new Vector3d(increment.x(), increment.y(), increment.z()),
-                new Vector3d());
-    }
 }
